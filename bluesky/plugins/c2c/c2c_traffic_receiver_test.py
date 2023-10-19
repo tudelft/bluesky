@@ -59,7 +59,7 @@ class MQTTC2CTrafficClient(mqtt.Client):
         super().__init__()
 
     def run(self):
-        self.connect("localhost", 1883, 60)
+        self.connect("mosquitto", 1883, 60)
         rc = self.loop_start()
         return rc
 
