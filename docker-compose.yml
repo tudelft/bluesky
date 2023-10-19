@@ -1,0 +1,12 @@
+version: '3.7'
+services:
+  bluesky:
+    image: tudelft/bluesky
+    build: .
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - "./mosquitto:/mosquitto"
