@@ -4,6 +4,10 @@ services:
   bluesky:
     image: tudelft/bluesky
     build: .
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+
   mosquitto:
     image: eclipse-mosquitto:latest
     ports:
