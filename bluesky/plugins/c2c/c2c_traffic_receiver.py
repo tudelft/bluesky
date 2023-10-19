@@ -9,6 +9,8 @@ import numpy as np
 
 import json
 
+import os
+
 def init_plugin():
     # Instantiate C2CTraffic entity
     c2c_traffic_receiver = C2CTrafficReceiver()
@@ -54,7 +56,7 @@ class MQTTC2CTrafficReceiverClient(mqtt.Client):
         self.c2c_traffic_object = c2c_traffic_object
 
     def run(self):
-        self.connect("mosquitto", 1883, 60)
+        self.connect(os.environ["MQTT_HOST"], 1883, 60)
         self.subscribe("daa/traffic", 0)
         rc = self.loop_start()
         return rc
