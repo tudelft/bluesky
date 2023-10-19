@@ -61,7 +61,7 @@ class MQTTC2CTrafficClient(mqtt.Client):
         super().__init__()
 
     def run(self):
-        self.connect(os.environ["MQTT_HOST"], 1883, 60)
+        self.connect(os.environ["MQTT_HOST"], os.environ["MQTT_PORT"], 60)
         rc = self.loop_start()
         return rc
 

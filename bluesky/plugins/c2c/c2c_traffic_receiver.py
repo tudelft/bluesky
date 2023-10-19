@@ -56,7 +56,7 @@ class MQTTC2CTrafficReceiverClient(mqtt.Client):
         self.c2c_traffic_object = c2c_traffic_object
 
     def run(self):
-        self.connect(os.environ["MQTT_HOST"], 1883, 60)
+        self.connect(os.environ["MQTT_HOST"], os.environ["MQTT_PORT"], 60)
         self.subscribe("daa/traffic", 0)
         rc = self.loop_start()
         return rc
