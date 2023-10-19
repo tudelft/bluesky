@@ -12,10 +12,6 @@ services:
       - "11001:11001/tcp"
       - "12000:12000/tcp"
       - "12001:12001/tcp"
-      - "11000:11000/udp"
-      - "11001:11001/udp"
-      - "12000:12000/udp"
-      - "12001:12001/udp"
   mosquitto:
     image: eclipse-mosquitto:latest
     ports:
