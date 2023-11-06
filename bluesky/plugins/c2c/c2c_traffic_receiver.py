@@ -8,6 +8,7 @@ import threading
 import numpy as np
 
 import json
+import time
 
 import os
 
@@ -29,6 +30,11 @@ class C2CTrafficReceiver(Entity):
 
         # Mqtt message buffer
         self.mqtt_msg_buf = []
+        # List of mqtt msgs copied from the buffer
+        self.mqtt_msgs = []
+
+        # struct of traffic objects
+        self.traffic_objects = {}
 
         # Start mqtt client to read out control commands
         self.mqtt_client = MQTTC2CTrafficReceiverClient(self)
@@ -37,18 +43,84 @@ class C2CTrafficReceiver(Entity):
     def recv_mqtt(self, msg):
         self.lock.acquire()
         try:
-            print(msg.topic)
             if msg.topic == 'daa/traffic': 
                 self.mqtt_msg_buf.append(json.loads(msg.payload))
-                print(json.loads(msg.payload))
         finally:
             self.lock.release()
 
+    def copy_buffers(self):
+        self.lock.acquire()
+        try:
+            for msg in self.mqtt_msg_buf:
+                self.mqtt_msgs.append(msg)
+
+            # Empty buffers
+            self.mqtt_msg_buf = []
+        finally:
+            self.lock.release()
+
+    def update_traffic_object(self, msg):
+        # Check if traffic already exists
+        if str(msg['ac_id']) in self.traffic_objects.keys():
+            self.traffic_objects[str(msg['ac_id'])].update(msg)
+        else:
+            self.traffic_objects[str(msg['ac_id'])] = C2CTraffic(msg)
+
     @timed_function(dt=0.05)
     def update_c2c_traffic(self):
-        # Read message buffer to read new messages and empty
-        self.mqtt_msg_buf = []
-        return
+        self.copy_buffers()
+        # Read new messages from buffer
+        for msg in self.mqtt_msgs:
+            self.update_traffic_object(msg)
+
+        # Empty msgs
+        self.mqtt_msgs = []
+
+        # Check non updated traffic
+        time_now_s = time.time()
+        remove_keys = []
+        for key in self.traffic_objects.keys():
+            traffic = self.traffic_objects[key]
+            # Delete if nothing received for 10 seconds
+            if (time_now_s - traffic.timestamp_s) > 10.:
+                traffic.remove()
+                remove_keys.append(key)
+        
+        for key in remove_keys:
+            self.traffic_objects.pop(key)
+    
+class C2CTraffic(object):
+    def __init__(self, msg):
+        self.ac_id = str(msg['ac_id'])
+        self.lat = msg['lat']
+        self.lon = msg['lon']
+        self.alt = msg['alt']
+        self.vn = msg['vn']
+        self.ve = msg['ve']
+        self.vd = msg['vd']
+        self.hdg = np.rad2deg(np.arctan2(self.ve, self.vn))
+        self.h_spd = np.sqrt(self.ve**2 + self.vn**2)
+        self.timestamp_s = time.time()
+        if self.h_spd < 0.1:
+            self.h_spd = 0.
+        bs.traf.cre(self.ac_id, 'MAVIC', self.lat, self.lon, self.hdg, self.alt, self.h_spd)
+    
+    def update(self, msg):
+        self.lat = msg['lat']
+        self.lon = msg['lon']
+        self.alt = msg['alt']
+        self.vn = msg['vn']
+        self.ve = msg['ve']
+        self.vd = msg['vd']
+        self.hdg = np.rad2deg(np.arctan2(self.ve, self.vn))
+        self.h_spd = np.sqrt(self.ve**2 + self.vn**2)
+        self.timestamp_s = time.time()
+        if self.h_spd < 0.1:
+            self.h_spd = 0.
+        bs.traf.move(bs.traf.id2idx(self.ac_id), self.lat, self.lon, self.alt, self.hdg, self.h_spd, -self.vd)
+
+    def remove(self):
+        bs.traf.delete(bs.traf.id2idx(self.ac_id))
 
 class MQTTC2CTrafficReceiverClient(mqtt.Client):
     def __init__(self, c2c_traffic_object):
