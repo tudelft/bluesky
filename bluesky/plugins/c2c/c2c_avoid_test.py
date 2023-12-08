@@ -31,8 +31,6 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
     def on_log(self, mqttc, obj, level, string):
         return
 
-mqtt_publisher = MQTTAvoidRequestPublisher(mqtt.Client)
-mqtt_publisher.connect('localhost')
 
 def init_plugin():
     # Instantiate C2COwnstate entity
@@ -59,16 +57,18 @@ def generate_testresolution(acid: str):
         alt_res = bs.traf.alt[i] # [m]
 
         # Send request
-        mqtt_publisher.loop_start()
+        
         body = {}
         body['timestamp'] = int(time.time())
         body['waypoint'] = {}
         body['waypoint']['lat'] = lat_res * 10**7
         body['waypoint']['lon'] = lon_res * 10**7
         body['alt'] = alt_res * 10**3
-        
-        infot = mqtt_publisher.publish('daa/avoid_request', payload=json.dumps(body))
-        #infot.wait_for_publish()
+
+        mqtt_publisher = MQTTAvoidRequestPublisher()
+        mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
+        mqtt_publisher.loop_start()
+        mqtt_publisher.publish('daa/avoid_request', payload=json.dumps(body))
         mqtt_publisher.loop_stop()
 
     else:
