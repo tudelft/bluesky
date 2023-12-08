@@ -32,7 +32,7 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
         return
 
 mqtt_publisher = MQTTAvoidRequestPublisher(mqtt.Client)
-mqtt_publisher.connect(os.environ["MQTT_HOST"])
+mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
 
 def init_plugin():
     # Instantiate C2COwnstate entity
