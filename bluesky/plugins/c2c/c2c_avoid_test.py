@@ -49,7 +49,7 @@ class C2CAvoidTest(Entity):
 
 @stack.command()
 def generate_testresolution(acid: str):
-    i = bs.traf.id2idx[acid]
+    i = acid
     qdr_res = 45. #[deg]
     dist_res = 100. / nm # [nm]
     lat_res, lon_res = geo.qdrpos(bs.traf.lat[i], bs.traf.lon[i], qdr_res, dist_res)
