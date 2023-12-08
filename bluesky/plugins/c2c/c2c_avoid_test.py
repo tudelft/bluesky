@@ -49,27 +49,23 @@ class C2CAvoidTest(Entity):
 
 @stack.command()
 def generate_testresolution(acid: str):
-    if acid in bs.traf.id:
-        i = bs.traf.id2idx[acid]
-        qdr_res = 45. #[deg]
-        dist_res = 100. / nm # [nm]
-        lat_res, lon_res = geo.qdrpos(bs.traf.lat[i], bs.traf.lon[i], qdr_res, dist_res)
-        alt_res = bs.traf.alt[i] # [m]
+    i = bs.traf.id2idx[acid]
+    qdr_res = 45. #[deg]
+    dist_res = 100. / nm # [nm]
+    lat_res, lon_res = geo.qdrpos(bs.traf.lat[i], bs.traf.lon[i], qdr_res, dist_res)
+    alt_res = bs.traf.alt[i] # [m]
 
-        # Send request
-        
-        body = {}
-        body['timestamp'] = int(time.time())
-        body['waypoint'] = {}
-        body['waypoint']['lat'] = lat_res * 10**7
-        body['waypoint']['lon'] = lon_res * 10**7
-        body['alt'] = alt_res * 10**3
+    # Send request
+    
+    body = {}
+    body['timestamp'] = int(time.time())
+    body['waypoint'] = {}
+    body['waypoint']['lat'] = lat_res * 10**7
+    body['waypoint']['lon'] = lon_res * 10**7
+    body['alt'] = alt_res * 10**3
 
-        mqtt_publisher = MQTTAvoidRequestPublisher()
-        mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
-        mqtt_publisher.loop_start()
-        mqtt_publisher.publish('daa/avoid_request', payload=json.dumps(body))
-        mqtt_publisher.loop_stop()
-
-    else:
-        return
+    mqtt_publisher = MQTTAvoidRequestPublisher()
+    mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
+    mqtt_publisher.loop_start()
+    mqtt_publisher.publish('daa/avoid_request', payload=json.dumps(body))
+    mqtt_publisher.loop_stop()
