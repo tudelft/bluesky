@@ -49,6 +49,7 @@ class C2CAvoidTest(Entity):
         self.traffic_start_time = 0
         self.traffic_avoid_send = False
 
+    @timed_function(dt=0.5)
     def check_traffic(self):
         n_traf = bs.traf.ntraf
         if n_traf > 0:
