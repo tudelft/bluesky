@@ -45,6 +45,33 @@ def init_plugin():
 class C2CAvoidTest(Entity):
     def __init__(self):
         super().__init__()
+        self.traffic_callsign = None
+        self.traffic_start_time = 0
+        self.traffic_avoid_send = False
+
+    def check_traffic(self):
+        n_traf = bs.traf.ntraf
+        if n_traf > 0:
+            # Check if callsign already registered
+            if self.traffic_callsign == None:
+                self.traffic_callsign = bs.traf.id[0]
+                self.traffic_start_time = time.time()
+                self.traffic_avoid_send = False
+            else:
+                # Check if callsign is equal
+                if self.traffic_callsign == bs.traf.id[0]:
+                    if not self.traffic_avoid_send:
+                        if ((time.time() - self.traffic_start_time) > 30.):
+                            generate_testresolution(bs.traf.id[0])
+                            self.traffic_avoid_send = True
+                else:
+                    self.traffic_callsign = bs.traf.id[0]
+                    self.traffic_start_time = time.time()
+                    self.traffic_avoid_send = False
+        else:
+            self.traffic_callsign = None
+            self.traffic_start_time = 0
+            self.traffic_avoid_send = False
 
 
 @stack.command()
@@ -60,9 +87,9 @@ def generate_testresolution(acid: str):
     body = {}
     body['timestamp'] = int(time.time())
     body['waypoint'] = {}
-    body['waypoint']['lat'] = lat_res * 10**7
-    body['waypoint']['lon'] = lon_res * 10**7
-    body['alt'] = alt_res * 10**3
+    body['waypoint']['lat'] = int(lat_res * 10**7)
+    body['waypoint']['lon'] = int(lon_res * 10**7)
+    body['alt'] = int(alt_res * 10**3)
 
     mqtt_publisher = MQTTAvoidRequestPublisher()
     mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
