@@ -92,12 +92,12 @@ class C2CTrafficReceiver(Entity):
 class C2CTraffic(object):
     def __init__(self, msg):
         self.ac_id = str(msg['ac_id'])
-        self.lat = msg['lat']
-        self.lon = msg['lon']
-        self.alt = msg['alt']
-        self.vn = msg['vn']
-        self.ve = msg['ve']
-        self.vd = msg['vd']
+        self.lat = float(msg['lat']) / 10**7
+        self.lon = float(msg['lon']) / 10**7
+        self.alt = float(msg['alt']) / 10**3
+        self.vn = float(msg['vn']) / 10**3
+        self.ve = float(msg['ve']) / 10**3
+        self.vd = float(msg['vd']) / 10**3
         self.hdg = np.rad2deg(np.arctan2(self.ve, self.vn))
         self.h_spd = np.sqrt(self.ve**2 + self.vn**2)
         self.timestamp_s = time.time()
