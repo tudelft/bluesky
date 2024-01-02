@@ -86,6 +86,7 @@ def generate_testresolution(acid: str):
     # Send request
     
     body = {}
+    body['ac_id'] = bs.traf.id[0]
     body['timestamp'] = int(time.time())
     body['waypoint'] = {}
     body['waypoint']['lat'] = int(lat_res * 10**7)
