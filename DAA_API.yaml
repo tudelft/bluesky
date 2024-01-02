@@ -1,0 +1,218 @@
+asyncapi: '2.0.0'
+info:
+  title: DAA API
+  version: '1.0.3'
+  description: The DAA API enables users to perform tactical detect and avoid as service
+servers:
+  mosquitto:
+    url: mqtt://localhost:1883
+    protocol: mqtt
+channels:
+  daa/ownstate:
+    publish:
+      summary: "Stream of ownstate data. Advised to feed at a rate of at least 1 Hz"
+      operationId: onOwnstateReception
+      message:
+        contentType: application/json
+        payload:
+          $ref: "#/components/schemas/FlightState"
+
+  daa/traffic:
+    publish:
+      summary: "Stream the state of nearby traffic to the DAA instance of the ownship. It is recommended to feed this data to the DAA module at at least 1 Hz per traffic object."
+      operationId: onTrafficReception
+      message:
+        contentType: application/json
+        payload:
+          $ref: "#/components/schemas/FlightState"
+
+  daa/geofence:
+    publish:
+      summary: "If published, the geofence in which the avoidance manouvre needs to be resolved is updated"
+      operationId: onGeofenceReception
+      message:
+        contentType: application/json
+        payload:
+          $ref: "#/components/schemas/GeoZone"
+
+  daa/status:
+    subscribe:
+      summary: Async channel stream of the daa status. The status is being supplied at the same rate daa/traffic is published to the DAA module.
+      operationId: onConflictResolution
+      message:
+        contentType: application/json
+        payload:
+          $ref: "#/components/schemas/ConflictState"
+
+  daa/avoid_request:
+    subscribe:
+      summary: "Async stream for which an avoid request in terms of an avoidance waypoint is generated"
+      operationId: onAvoidRequest
+      message:
+        contentType: application/json
+        payload:
+          $ref: "#/components/schemas/AvoidRequest"
+
+components:
+  schemas:
+
+    Waypoint:
+      type: object
+      properties:
+        lat:
+          type: integer
+          format: int32
+          description: "Latitude [degE7]"
+        lon:
+          type: integer
+          format: int32
+          description: "Longitude [degE7]"
+        alt:
+          type: integer
+          format: int32
+          description: "Altitude above MSL [mE3]"
+      required:
+        - lat
+        - lon
+        - alt
+
+    AvoidWaypoint:
+      type: object
+      properties:
+        lat:
+          type: integer
+          format: int32
+          description: "Latitude [degE7]"
+        lon:
+          type: integer
+          format: int32
+          description: "Longitude [degE7]"
+        alt:
+          type: integer
+          format: int32
+          description: "Altitude above MSL [mE3]"
+        speed:
+          type: number
+          format: float
+          description: "Speed to fly to avoidance waypoint"
+      required:
+        - lat
+        - lon
+        - alt
+
+    FlightPlan:
+      type: object
+      description: "The flightplan of the vehicle up to the waypoint beyond the lookahead time of the DAA algorithm. If not supplied, the daa assumes in its conflict detection method that the vehicle's current state (3D speed vector) is propagted linear within the lookahead time."
+      properties:
+        waypoints:
+          type: array
+          description: "An array of waypoints in the flightplan that will be reach up to the waypoint beyond the lookahead time of the DAA method."
+          items:
+            $ref: "#/components/schemas/Waypoint"
+
+    FlightState:
+      type: object
+      description: "The flighstate gives the actual state of a vehicle and intentions as Flightplan"
+      properties:
+        ac_id:
+          type: string
+          description: "Unique identification of vehicle that needs to stay constant for each vehicle for each operation"
+        priority:
+          type: integer
+          format: int32
+          description: "Priority factor / vehicle type"
+        lat:
+          type: integer
+          format: int32
+          description: "Latitude [degE7]"
+        lon:
+          type: integer
+          format: int32
+          description: "Longitude [degE7]"
+        alt:
+          type: integer
+          format: int32
+          description: "Altitude above MSL [mE3]"
+        vn:
+          type: integer
+          format: int32
+          description: "Speed in North direction [m/sE3]"
+        ve:
+          type: integer
+          format: int32
+          description: "Speed in East direction [m/sE3]"
+        vd:
+          type: integer
+          format: int32
+          description: "Speed in Down direction [m/sE3]"
+        fp:
+          $ref: '#/components/schemas/FlightPlan'
+          description: "Flightplan to be executed from the current moment"
+      required:
+        - ac_id
+        - priority
+        - lat
+        - lon
+        - alt
+        - vn
+        - ve
+        - vd
+
+    ConflictState:
+      type: object
+      description: "The ConflictState gives the state of the current conflict"
+      properties:
+        inconf:
+          type: boolean
+          description: "Returns true if a conflict for the UAV has been detected"
+        inreso:
+          type: boolean
+          description: "Returns true if a conflict resolution is being performed"
+      required:
+        - inconf
+        - inreso
+
+    AvoidRequest:
+      type: object
+      description: "Message requesting a conflict resolution to the operator by directly adding a waypoint in the flightplan"
+      properties:
+        ac_id:
+          type: string
+          description: "Unique identification of vehicle that needs to stay constant for each vehicle for each operation"
+        timestamp:
+          type: integer
+          format: uint32
+          description: "Unix time since epoch"
+        waypoint:
+          type: object
+          description: "An avoidance waypoint which should be directly added as first waypoint to the flightplan"
+          $ref: "#/components/schemas/AvoidWaypoint"
+      required:
+        - ac_id
+        - timestamp
+        - waypoint
+
+    GeoZonePoint:
+      type: object
+      description: "A coordinate in lattiude and longitude for a vertex point of the geozonen which a tactical avoidance manoeuvre has to be performed"
+      properties:
+        lat:
+          type: integer
+          format: int32
+          description: "Latitude [degE7]"
+        lon:
+          type: integer
+          format: int32
+          description: "Longitude [degE7]"
+      required:
+        - lat
+        - lon
+
+    GeoZone:
+      type: object
+      description: The geozone is a CONVEX POLYGON that contains horizontal lattitude and longitude coordinate of vertices in which the UAV needs to stay during an tactical conflict resolution manoeuvre. 3 Points need to be supplied at least to have an enclosed polygon. The drone is theoritcally put its avoidance waypoint everywhere if this geozone is not supplied in the traffic message."
+      properties:
+        geozone:
+          type: array
+          items:
+            $ref: "#/components/schemas/GeoZonePoint"
