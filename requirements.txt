@@ -6,3 +6,4 @@ zmq
 pandas
 bluesky-simdata
 paho-mqtt
+pyclipper
