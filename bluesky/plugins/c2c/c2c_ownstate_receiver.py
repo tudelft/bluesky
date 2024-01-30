@@ -81,10 +81,9 @@ class C2COwnstateReceiver(Entity):
         time_now_s = time.time()
         remove_keys = []
         for key in self.ownstate_objects.keys():
-            ownstate = self.ownstate_objects[key]
             # Delete if nothing received for 10 seconds
-            if (time_now_s - ownstate.timestamp_s) > 10.:
-                ownstate.remove()
+            if (time_now_s - self.ownstate_objects[key].timestamp_s) > 10.:
+                self.ownstate_objects[key].remove()
                 remove_keys.append(key)
         
         for key in remove_keys:

@@ -80,10 +80,9 @@ class C2CTrafficReceiver(Entity):
         time_now_s = time.time()
         remove_keys = []
         for key in self.traffic_objects.keys():
-            traffic = self.traffic_objects[key]
             # Delete if nothing received for 10 seconds
-            if (time_now_s - traffic.timestamp_s) > 10.:
-                traffic.remove()
+            if (time_now_s - self.traffic_objects[key].timestamp_s) > 10.:
+                self.traffic_objects[key].remove()
                 remove_keys.append(key)
         
         for key in remove_keys:
