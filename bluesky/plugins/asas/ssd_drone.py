@@ -638,7 +638,7 @@ class SSD_Drone(ConflictResolution):
 
                     # send resolution over mqtt
                     body = {}
-                    body['ac_id'] = ownship.id[0]
+                    body['ac_id'] = ownship.id[i]
                     body['timestamp'] = int(time.time())
                     body['waypoint'] = {}
                     body['waypoint']['lat'] = int(lat_res * 10**7)
