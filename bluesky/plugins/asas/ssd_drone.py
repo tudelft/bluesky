@@ -7,6 +7,7 @@ import paho.mqtt.client as mqtt
 from bluesky.traffic.asas import ConflictResolution
 from bluesky.tools import geo
 from bluesky.tools.aero import nm
+from bluesky import core
 import numpy as np
 # Try to import pyclipper
 try:
@@ -16,7 +17,6 @@ except ImportError:
 
 
 # TODO: not completely migrated yet to class-based implementation
-
 
 def init_plugin():
 
@@ -32,6 +32,21 @@ def init_plugin():
     }
 
     return config
+
+class ConflictResolutionTime(core.Entity):
+    ''' Entity of time when sent conflict resolution. '''
+    def __init__(self):
+        super().__init__()
+        with self.settrafarrays():
+            self.cr_time = np.array([])
+
+    def create(self, n=1):
+        ''' This function gets called automatically when new aircraft are created. '''
+        super().create(n)
+        # After base creation we can change the values in our own states for the new aircraft
+        self.cr_time[-n:] = [0 for _ in range(n)]
+
+conflictresolutiontime = ConflictResolutionTime()
 
 class MQTTAvoidRequestPublisher(mqtt.Client):
 
@@ -636,20 +651,26 @@ class SSD_Drone(ConflictResolution):
                     lat_res, lon_res = geo.qdrpos(ownship.lat[i], ownship.lon[i], qdr_res, dist_res)
                     alt_res = ownship.alt[i] # [m]
 
-                    # send resolution over mqtt
-                    body = {}
-                    body['ac_id'] = ownship.id[i]
-                    body['timestamp'] = int(time.time())
-                    body['waypoint'] = {}
-                    body['waypoint']['lat'] = int(lat_res * 10**7)
-                    body['waypoint']['lon'] = int(lon_res * 10**7)
-                    body['alt'] = int(alt_res * 10**3)
+                    # Check timeout for conflict resolution
+                    current_time = time.time()
+                    delta_cr_time = current_time - conflictresolutiontime.cr_time[i]
 
-                    mqtt_publisher = MQTTAvoidRequestPublisher()
-                    mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
-                    mqtt_publisher.loop_start()
-                    mqtt_publisher.publish('daa/avoid_request', payload=json.dumps(body))
-                    mqtt_publisher.loop_stop()
+                    if (delta_cr_time > 4.0):
+                        conflictresolutiontime.cr_time[i] = current_time
+                        # send resolution over mqtt
+                        body = {}
+                        body['ac_id'] = ownship.id[i]
+                        body['timestamp'] = int(time.time())
+                        body['waypoint'] = {}
+                        body['waypoint']['lat'] = int(lat_res * 10**7)
+                        body['waypoint']['lon'] = int(lon_res * 10**7)
+                        body['alt'] = int(alt_res * 10**3)
+
+                        mqtt_publisher = MQTTAvoidRequestPublisher()
+                        mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
+                        mqtt_publisher.loop_start()
+                        mqtt_publisher.publish('daa/avoid_request', payload=json.dumps(body))
+                        mqtt_publisher.loop_stop()
 
                     # reset resolution as external parties have to respond to it
                     conf.asase[i] = 0.
