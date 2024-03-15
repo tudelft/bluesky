@@ -211,7 +211,7 @@ class Traffic(Entity):
             # Check if not already exist
             if self.id.count(acid.upper()) > 0:
                 return False, acid + " already exists."  # already exists do nothing
-            acid = n * [acid]
+            acid = n * [acid.upper()]
 
         # Adjust the size of all traffic arrays
         super().create(n)
