@@ -142,12 +142,12 @@
     "mfc": 0,
     "engines": [["Motor-E310-1", 0.0669], ["Motor-E310-2", 0.0669], ["Motor-E310-3", 0.0669], ["Motor-E310-4", 0.0669]],
     "envelop": {
-      "v_min": -18,
-      "v_max": 18,
-      "vs_min": -3,
-      "vs_max": 5,
-      "h_max": 5000,
-      "d_range_max": 7      
+      "v_min": -1000,
+      "v_max": 1000,
+      "vs_min": -1000,
+      "vs_max": 1000,
+      "h_max": 100000,
+      "d_range_max": 7000000      
    }
   },
    "Horsefly": {
