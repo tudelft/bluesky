@@ -5,7 +5,7 @@ services:
     image: tudelft/bluesky
     build: .
     environment:
-      MQTT_HOST: acc.helicus.com
+      MQTT_HOST: mosquitto
       MQTT_PORT: 1883
     ports:
       - "11000:11000/tcp"
