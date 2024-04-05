@@ -1,7 +1,7 @@
 asyncapi: '2.0.0'
 info:
   title: DAA API
-  version: '1.0.3'
+  version: '1.0.4'
   description: The DAA API enables users to perform tactical detect and avoid as service
 servers:
   mosquitto:
@@ -212,7 +212,13 @@ components:
       type: object
       description: The geozone is a CONVEX POLYGON that contains horizontal lattitude and longitude coordinate of vertices in which the UAV needs to stay during an tactical conflict resolution manoeuvre. 3 Points need to be supplied at least to have an enclosed polygon. The drone is theoritcally put its avoidance waypoint everywhere if this geozone is not supplied in the traffic message."
       properties:
+        ac_id:
+          type: string
+          description: "Unique identification of vehicle that needs to stay constant for each vehicle for each operation"
         geozone:
           type: array
           items:
             $ref: "#/components/schemas/GeoZonePoint"
+      required:
+        - ac_id
+        - geozone
