@@ -275,6 +275,9 @@ class SSD_Drone(ConflictResolution):
                 if vmin == vmax == 0:
                     continue
 
+                if vmin < 0.001:
+                    vmin = 0.001
+
                 # Map them into the format pyclipper wants. Outercircle CCW, innercircle CW
                 circle_tup = (tuple(map(tuple, np.flipud(xyc * vmax))), tuple(map(tuple, xyc * vmin)))
                 circle_lst = [list(map(list, np.flipud(xyc * vmax))), list(map(list, xyc * vmin))]
@@ -664,7 +667,7 @@ class SSD_Drone(ConflictResolution):
                         body['waypoint'] = {}
                         body['waypoint']['lat'] = int(lat_res * 10**7)
                         body['waypoint']['lon'] = int(lon_res * 10**7)
-                        body['alt'] = int(alt_res * 10**3)
+                        body['waypoint']['alt'] = int(alt_res * 10**3)
 
                         mqtt_publisher = MQTTAvoidRequestPublisher()
                         mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
