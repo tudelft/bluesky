@@ -302,7 +302,7 @@ def vcasormach(spd, h):
         - cas: Calibrated airspeed [m/s]
         - mach: Mach number [-]
     """
-    ismach = np.logical_and(spd > 0.1, spd < casmach_thr)
+    ismach = False; #np.logical_and(spd > 0.1, spd < casmach_thr)
     tas = np.where(ismach, vmach2tas(spd, h), vcas2tas(spd, h))
     cas = np.where(ismach, vtas2cas(tas, h), spd)
     mach   = np.where(ismach, spd, vtas2mach(tas, h))
