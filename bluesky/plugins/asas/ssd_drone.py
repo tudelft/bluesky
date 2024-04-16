@@ -625,11 +625,24 @@ class SSD_Drone(ConflictResolution):
                     lat_res, lon_res = geo.qdrpos(ownship.lat[i], ownship.lon[i], qdr_res, dist_res)
                     alt_res = ownship.alt[i] # [m]
 
+                    # Check reesolution in geofence
+                    geofence_defined = False
+                    solution_in_geofence = True
+                    try:
+                        areafilter.basic_shapes['GF_' + str(ownship.id[i])]
+                    except:
+                        pass
+                    else:
+                        geofence_defined = True
+
+                    if geofence_defined:
+                        solution_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), lat_res, lon_res, 0)
+
                     # Check timeout for conflict resolution
                     current_time = time.time()
                     delta_cr_time = current_time - conflictresolutiontime.cr_time[i]
                     
-                    if (delta_cr_time > 4.0):
+                    if (delta_cr_time > 4.0 and solution_in_geofence):
                         conflictresolutiontime.cr_time[i] = current_time
                         # send resolution over mqtt
                         body = {}
@@ -646,9 +659,9 @@ class SSD_Drone(ConflictResolution):
                         mqtt_publisher.publish('daa/avoid_request', payload=json.dumps(body))
                         mqtt_publisher.loop_stop()
 
-                    # reset resolution as external parties have to respond to it
-                    conf.asase[i] = gseast[i]
-                    conf.asasn[i] = gsnorth[i]
+                # reset resolution as external parties have to respond to it
+                conf.asase[i] = gseast[i]
+                conf.asasn[i] = gsnorth[i]
 
     def area(self, vset):
         """ This function calculates the area of the set of FRV or ARV """
