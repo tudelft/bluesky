@@ -67,29 +67,6 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
 
 
 class SSD_Drone(ConflictResolution):
-    def setprio(self, flag=None, priocode=''):
-        '''Set the prio switch and the type of prio '''
-        if flag is None:
-            return True, "PRIORULES [ON/OFF] [PRIOCODE]" + \
-                            "\nAvailable priority codes: " + \
-                            "\n     RS1:  Shortest way out" + \
-                            "\n     RS2:  Clockwise turning" + \
-                            "\n     RS3:  Heading first, RS1 second" + \
-                            "\n     RS4:  Speed first, RS1 second" + \
-                            "\n     RS5:  Shortest from target" + \
-                            "\n     RS6:  Rules of the air" + \
-                            "\n     RS7:  Sequential RS1" + \
-                            "\n     RS8:  Sequential RS5" + \
-                            "\n     RS9:  Counterclockwise turning" + \
-                            "\nPriority is currently " + ("ON" if self.swprio else "OFF") + \
-                            "\nPriority code is currently: " + \
-                str(self.priocode)
-        options = ["RS1", "RS2", "RS3", "RS4",
-                   "RS5", "RS6", "RS7", "RS8", "RS9"]
-        if priocode not in options:
-            return False, "Priority code Not Understood. Available Options: " + str(options)
-        return super().setprio(flag, priocode)
-
     def loaded_pyclipper():
         """ Return true if pyclipper is successfully loaded """
         import sys
@@ -110,12 +87,8 @@ class SSD_Drone(ConflictResolution):
         # Initialize SSD variables with ntraf
         self.initializeSSD(conf, ownship.ntraf)
 
-        # Construct the SSD (twice in sequential methods)
-        if self.priocode == "RS7":
-            self.constructSSD(conf, ownship, "RS1")
-        if self.priocode == "RS8":
-            self.constructSSD(conf, ownship, "RS5")
-        self.constructSSD(conf, ownship, self.priocode)
+        # Construct the SSD
+        self.constructSSD(conf, ownship)
 
         # Get resolved speed-vector
         self.calculate_resolution(conf, ownship)
@@ -171,7 +144,7 @@ class SSD_Drone(ConflictResolution):
         # asas is an object of the ASAS class defined in asas.py
 
 
-    def constructSSD(self, conf, ownship, priocode="RS1"):
+    def constructSSD(self, conf, ownship):
         """ Calculates the FRV and ARV of the SSD """
         N = 0
         # Parameters
@@ -183,8 +156,6 @@ class SSD_Drone(ConflictResolution):
         betalos = np.pi / 4  # [rad] Minimum divertion angle for LOS (45 deg seems optimal)
         adsbmax = 65. * nm  # [m] Maximum ADS-B range
         beta = np.pi / 4 + betalos / 2
-        if priocode == "RS7" or priocode == "RS8":
-            adsbmax /= 2
 
         # Relevant info from traf
         gsnorth = ownship.gsnorth
@@ -309,11 +280,7 @@ class SSD_Drone(ConflictResolution):
                     # Now account for ADS-B range in indices of other aircraft (i_other)
                     ind = ind[ac_adsb]
                     i_other = i_other[ac_adsb]
-                    if not priocode == "RS7" and not priocode == "RS8":
-                        # Put it in class-object (not for RS7 and RS8)
-                        conf.inrange[i] = i_other
-                    else:
-                        conf.inrange2[i] = i_other
+                    conf.inrange[i] = i_other
                     # VO from 2 to 1 is mirror of 1 to 2. Only 1 to 2 can be constructed in
                     # this manner, so need a correction vector that will mirror the VO
                     fix = np.ones(np.shape(i_other))
@@ -339,15 +306,6 @@ class SSD_Drone(ConflictResolution):
                     pc = pyclipper.Pyclipper()
                     # Add circles (ring-shape) to clipper as subject
                     pc.AddPaths(pyclipper.scale_to_clipper(circle_tup), pyclipper.PT_SUBJECT, True)
-
-                    # Extra stuff needed for RotA
-                    if priocode == "RS6":
-                        # Make another clipper object for RotA
-                        pc_rota = pyclipper.Pyclipper()
-                        pc_rota.AddPaths(pyclipper.scale_to_clipper(circle_tup), pyclipper.PT_SUBJECT, True)
-                        # Bearing calculations from own view and other view
-                        brg_own = np.mod((np.rad2deg(qdr[ind]) + fix_ang - hdg[i]) + 540., 360.) - 180.
-                        brg_other = np.mod((np.rad2deg(qdr[ind]) + 180. - fix_ang - hdg[i_other]) + 540., 360.) - 180.
 
                     # Add each other other aircraft to clipper as clip
                     for j in range(np.shape(i_other)[0]):
@@ -378,42 +336,12 @@ class SSD_Drone(ConflictResolution):
                             VO = pyclipper.scale_to_clipper(tuple(map(tuple, xy_los)))
                         # Add scaled VO to clipper
                         pc.AddPath(VO, pyclipper.PT_CLIP, True)
-                        # For RotA it is possible to ignore
-                        if priocode == "RS6":
-                            if brg_own[j] >= -20. and brg_own[j] <= 110.:
-                                # Head-on or converging from right
-                                pc_rota.AddPath(VO, pyclipper.PT_CLIP, True)
-                            elif brg_other[j] <= -110. or brg_other[j] >= 110.:
-                                # In overtaking position
-                                pc_rota.AddPath(VO, pyclipper.PT_CLIP, True)
-                        # Detect conflicts for smaller layer in RS7 and RS8
-                        if priocode == "RS7" or priocode == "RS8":
-                            if pyclipper.PointInPolygon(pyclipper.scale_to_clipper((gseast[i], gsnorth[i])), VO):
-                                conf.inconf2[i] = True
-                        if priocode == "RS5":
-                            if pyclipper.PointInPolygon(pyclipper.scale_to_clipper((apeast[i], apnorth[i])), VO):
-                                conf.ap_free[i] = False
 
                     # Execute clipper command
                     FRV = pyclipper.scale_from_clipper(
                         pc.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
 
                     ARV = pc.Execute(pyclipper.CT_DIFFERENCE, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
-
-                    if not priocode == "RS1" and not priocode == "RS5" and not priocode == "RS7" and not priocode == "RS8":
-                        # Make another clipper object for extra intersections
-                        pc2 = pyclipper.Pyclipper()
-                        # When using RotA clip with pc_rota
-                        if priocode == "RS6":
-                            # Calculate ARV for RotA
-                            ARV_rota = pc_rota.Execute(pyclipper.CT_DIFFERENCE, pyclipper.PFT_NONZERO,
-                                                       pyclipper.PFT_NONZERO)
-                            if len(ARV_rota) > 0:
-                                pc2.AddPaths(ARV_rota, pyclipper.PT_CLIP, True)
-                        else:
-                            # Put the ARV in there, make sure it's not empty
-                            if len(ARV) > 0:
-                                pc2.AddPaths(ARV, pyclipper.PT_CLIP, True)
 
                     # Scale back
                     ARV = pyclipper.scale_from_clipper(ARV)
@@ -452,66 +380,15 @@ class SSD_Drone(ConflictResolution):
                         FRV_area_loc[i] = self.area(FRV)
                         ARV_area_loc[i] = self.area(ARV)
 
-                        # For resolution purposes sometimes extra intersections are wanted
-                        if priocode == "RS2" or priocode == "RS9" or priocode == "RS6" or priocode == "RS3" or priocode == "RS4":
-                            # Make a box that covers right or left of SSD
-                            own_hdg = hdg[i] * np.pi / 180
-                            # Efficient calculation of box, see notes
-                            if priocode == "RS2" or priocode == "RS6":
-                                # CW or right-turning
-                                sin_table = np.array([[1, 0], [-1, 0], [-1, -1], [1, -1]], dtype=np.float64)
-                                cos_table = np.array([[0, 1], [0, -1], [1, -1], [1, 1]], dtype=np.float64)
-                            elif priocode == "RS9":
-                                # CCW or left-turning
-                                sin_table = np.array([[1, 0], [1, 1], [-1, 1], [-1, 0]], dtype=np.float64)
-                                cos_table = np.array([[0, 1], [-1, 1], [-1, -1], [0, -1]], dtype=np.float64)
-                            # Overlay a part of the full SSD
-                            if priocode == "RS2" or priocode == "RS9" or priocode == "RS6":
-                                # Normalized coordinates of box
-                                xyp = np.sin(own_hdg) * sin_table + np.cos(own_hdg) * cos_table
-                                # Scale with vmax (and some factor) and put in tuple
-                                part = pyclipper.scale_to_clipper(tuple(map(tuple, 1.1 * vmax * xyp)))
-                                pc2.AddPath(part, pyclipper.PT_SUBJECT, True)
-                            elif priocode == "RS3":
-                                # Small ring
-                                xyp = (tuple(map(tuple, np.flipud(xyc * min(vmax, gs_ap[i] + 0.1)))),
-                                       tuple(map(tuple, xyc * max(vmin, gs_ap[i] - 0.1))))
-                                part = pyclipper.scale_to_clipper(xyp)
-                                pc2.AddPaths(part, pyclipper.PT_SUBJECT, True)
-                            elif priocode == "RS4":
-                                hdg_sel = hdg[i] * np.pi / 180
-                                xyp = np.array([[np.sin(hdg_sel - 0.0087), np.cos(hdg_sel - 0.0087)],
-                                                [0, 0],
-                                                [np.sin(hdg_sel + 0.0087), np.cos(hdg_sel + 0.0087)]],
-                                               dtype=np.float64)
-                                part = pyclipper.scale_to_clipper(tuple(map(tuple, 1.1 * vmax * xyp)))
-                                pc2.AddPath(part, pyclipper.PT_SUBJECT, True)
-                            # Execute clipper command
-                            ARV_calc = pyclipper.scale_from_clipper(
-                                pc2.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
-                            N += 1
-                            # If no smaller ARV is found, take the full ARV
-                            if len(ARV_calc) == 0:
-                                ARV_calc = ARV
-                            # Check multi exteriors, if this layer is not a list, it means it has no exteriors
-                            # In that case, make it a list, such that its format is consistent with further code
-                            if not type(ARV_calc[0][0]) == list:
-                                ARV_calc = [ARV_calc]
-                        # Shortest way out prio, so use full SSD (ARV_calc = ARV)
-                        else:
-                            ARV_calc = ARV
+                        ARV_calc = ARV
                         # Update calculatable ARV for resolutions
                         ARV_calc_loc[i] = ARV_calc
 
-        # If sequential approach, the local should go elsewhere
-        if not priocode == "RS7" and not priocode == "RS8":
-            conf.FRV = FRV_loc
-            conf.ARV = ARV_loc
-            conf.ARV_calc = ARV_calc_loc
-            conf.FRV_area = FRV_area_loc
-            conf.ARV_area = ARV_area_loc
-        else:
-            conf.ARV_calc2 = ARV_calc_loc
+        conf.FRV = FRV_loc
+        conf.ARV = ARV_loc
+        conf.ARV_calc = ARV_calc_loc
+        conf.FRV_area = FRV_area_loc
+        conf.ARV_area = ARV_area_loc
         return
 
 
@@ -520,121 +397,45 @@ class SSD_Drone(ConflictResolution):
         # It's just linalg, however credits to: http://stackoverflow.com/a/1501725
         # Variables
         ARV = conf.ARV_calc
-        if self.priocode == "RS7" or self.priocode == "RS8":
-            ARV2 = conf.ARV_calc2
-        # Select AP-setting as reference point for closest to target rulesets
-        if self.priocode == "RS5" or self.priocode == "RS8":
-            gsnorth = np.cos(ownship.ap.trk / 180 * np.pi) * ownship.ap.tas
-            gseast = np.sin(ownship.ap.trk / 180 * np.pi) * ownship.ap.tas
-        else:
-            gsnorth = ownship.gsnorth
-            gseast = ownship.gseast
+        gsnorth = ownship.gsnorth
+        gseast = ownship.gseast
         ntraf = ownship.ntraf
 
         # Loop through SSDs of all aircraft
         for i in range(ntraf):
             # Only those that are in conflict need to resolve
             if conf.inconf[i] and ARV[i] is not None and len(ARV[i]) > 0:
-                # First check if AP-setting is free
-                if conf.ap_free[i] and self.priocode == "RS5":
-                    conf.asase[i] = gseast[i]
-                    conf.asasn[i] = gsnorth[i]
-                else:
-                    # Loop through all exteriors and append. Afterwards concatenate
-                    p = []
-                    q = []
-                    for j in range(len(ARV[i])):
-                        p.append(np.array(ARV[i][j]))
-                        q.append(np.diff(np.row_stack((p[j], p[j][0])), axis=0))
-                    p = np.concatenate(p)
-                    q = np.concatenate(q)
-                    # Calculate squared distance between edges
-                    l2 = np.sum(q ** 2, axis=1)
-                    # Catch l2 == 0 (exception)
-                    same = l2 < 1e-8
-                    l2[same] = 1.
-                    # Calc t
-                    t = np.sum((np.array([gseast[i], gsnorth[i]]) - p) * q, axis=1) / l2
-                    # Speed of boolean indices only slightly faster (negligible)
-                    # t must be limited between 0 and 1
-                    t = np.clip(t, 0., 1.)
-                    t[same] = 0.
-                    # Calculate closest point to each edge
-                    x1 = p[:, 0] + t * q[:, 0]
-                    y1 = p[:, 1] + t * q[:, 1]
-                    # Get distance squared
-                    d2 = (x1 - gseast[i]) ** 2 + (y1 - gsnorth[i]) ** 2
-                    # Sort distance
-                    ind = np.argsort(d2)
-                    x1 = x1[ind]
-                    y1 = y1[ind]
+                # Loop through all exteriors and append. Afterwards concatenate
+                p = []
+                q = []
+                for j in range(len(ARV[i])):
+                    p.append(np.array(ARV[i][j]))
+                    q.append(np.diff(np.row_stack((p[j], p[j][0])), axis=0))
+                p = np.concatenate(p)
+                q = np.concatenate(q)
+                # Calculate squared distance between edges
+                l2 = np.sum(q ** 2, axis=1)
+                # Catch l2 == 0 (exception)
+                same = l2 < 1e-8
+                l2[same] = 1.
+                # Calc t
+                t = np.sum((np.array([gseast[i], gsnorth[i]]) - p) * q, axis=1) / l2
+                # Speed of boolean indices only slightly faster (negligible)
+                # t must be limited between 0 and 1
+                t = np.clip(t, 0., 1.)
+                t[same] = 0.
+                # Calculate closest point to each edge
+                x1 = p[:, 0] + t * q[:, 0]
+                y1 = p[:, 1] + t * q[:, 1]
+                # Get distance squared
+                d2 = (x1 - gseast[i]) ** 2 + (y1 - gsnorth[i]) ** 2
+                # Sort distance
+                ind = np.argsort(d2)
+                x1 = x1[ind]
+                y1 = y1[ind]
 
-                    if self.priocode == "RS7" or self.priocode == "RS8" and conf.inconf2[i]:
-                        # Loop through all exteriors and append. Afterwards concatenate
-                        p = []
-                        q = []
-                        for j in range(len(ARV2[i])):
-                            p.append(np.array(ARV2[i][j]))
-                            q.append(np.diff(np.row_stack((p[j], p[j][0])), axis=0))
-                        p = np.concatenate(p)
-                        q = np.concatenate(q)
-                        # Calculate squared distance between edges
-                        l2 = np.sum(q ** 2, axis=1)
-                        # Catch l2 == 0 (exception)
-                        same = l2 < 1e-8
-                        l2[same] = 1.
-                        # Calc t
-                        t = np.sum((np.array([gseast[i], gsnorth[i]]) - p) * q, axis=1) / l2
-                        # Speed of boolean indices only slightly faster (negligible)
-                        # t must be limited between 0 and 1
-                        t = np.clip(t, 0., 1.)
-                        t[same] = 0.
-                        # Calculate closest point to each edge
-                        x2 = p[:, 0] + t * q[:, 0]
-                        y2 = p[:, 1] + t * q[:, 1]
-                        # Get distance squared
-                        d2 = (x2 - gseast[i]) ** 2 + (y2 - gsnorth[i]) ** 2
-                        # Sort distance
-                        ind = np.argsort(d2)
-                        x2 = x2[ind]
-                        y2 = y2[ind]
-                        d2 = d2[ind]
-
-                    # Store result in conf
-                    if not conf.inconf2[i] or not self.priocode == "RS7" and not self.priocode == "RS8":
-                        conf.asase[i] = x1[0]
-                        conf.asasn[i] = y1[0]
-                    else:
-                        # Sequential method, check if both result in very similar resolutions
-                        if (x1[0] - x2[0]) * (x1[0] - x2[0]) + (x1[0] - x2[0]) * (x1[0] - x2[0]) < 1:
-                            # In that case take the full layer
-                            conf.asase[i] = x1[0]
-                            conf.asasn[i] = y1[0]
-                        else:
-                            # In that case take the partial layer solution and see which
-                            # results in lower TLOS
-                            conf.asase[i] = x1[0]
-                            conf.asasn[i] = y1[0]
-                            # dv2 for the RS1-solution
-                            dist12 = (x1[0] - gseast[i]) ** 2 + (y1[0] - gsnorth[i]) ** 2
-                            # distances for the partial layer solution stored in d2
-                            ind = d2 < dist12
-                            if sum(ind) == 1:
-                                conf.asase[i] = x2[0]
-                                conf.asasn[i] = y2[0]
-                            elif sum(ind) > 1:
-                                x2 = x2[ind]
-                                y2 = y2[ind]
-                                # Get solution with minimum TLOS
-                                i_other = conf.inrange[i]
-                                idx = self.minTLOS(conf, ownship, i, i_other, x1, y1, x2, y2)
-                                # Get solution with maximum TLOS
-                                conf.asase[i] = x2[idx]
-                                conf.asasn[i] = y2[idx]
-                            else:
-                                # This case should not happen...
-                                conf.asase[i] = x1[0]
-                                conf.asasn[i] = y1[0]
+                conf.asase[i] = x1[0]
+                conf.asasn[i] = y1[0]
 
             # Those that are not in conflict will be assigned zeros
             # Or those that have no solutions (full ARV)
