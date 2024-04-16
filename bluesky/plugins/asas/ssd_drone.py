@@ -6,6 +6,7 @@ import os
 import paho.mqtt.client as mqtt
 from bluesky.traffic.asas import ConflictResolution
 from bluesky.tools import geo
+from bluesky.tools import areafilter
 from bluesky.tools.aero import nm
 from bluesky import core
 import numpy as np
@@ -285,10 +286,6 @@ class SSD_Drone(ConflictResolution):
                     # this manner, so need a correction vector that will mirror the VO
                     fix = np.ones(np.shape(i_other))
                     fix[i_other < i] = -1
-                    # Relative bearing [deg] from [-180,180]
-                    # (less required conversions than rad in RotA)
-                    fix_ang = np.zeros(np.shape(i_other))
-                    fix_ang[i_other < i] = 180.
 
                     # Get vertices in an x- and y-array of size (ntraf-1)*3x1
                     x = np.concatenate((gseast[i_other],
@@ -306,6 +303,53 @@ class SSD_Drone(ConflictResolution):
                     pc = pyclipper.Pyclipper()
                     # Add circles (ring-shape) to clipper as subject
                     pc.AddPaths(pyclipper.scale_to_clipper(circle_tup), pyclipper.PT_SUBJECT, True)
+
+                    # If there is a geofence, calculate relative variables:
+                    geofence_defined = False
+                    try:
+                        areafilter.basic_shapes['GF_' + str(ownship.id[i])]
+                    except:
+                        pass
+                    else:
+                        geofence_defined = True
+                        # Load geofence shape
+                        geofence = areafilter.basic_shapes['GF_' + str(ownship.id[i])]
+                        # Loop through geofence coordinates
+                        coordinates = np.reshape(geofence.coordinates, (int(len(geofence.coordinates) / 2), 2))
+                        qdrs_gf = np.array([]) # [deg] in hdg CW
+                        dists_gf = np.array([]) # [m]
+                        for k in range(len(coordinates)):
+                            # Calculate relative qdrs and distances of geofence points w.r.t. ownship
+                            qdr_gf, dist_gf = geo.qdrdist(ownship.lat[i], ownship.lon[i], coordinates[k][0], coordinates[k][1])
+                            qdrs_gf = np.append(qdrs_gf, qdr_gf)
+                            dists_gf = np.append(dists_gf, dist_gf * nm)
+
+                        qdrs_gf_rad = np.deg2rad(qdrs_gf)
+                        xs_gf = dists_gf * np.sin(qdrs_gf_rad) # [m] East
+                        ys_gf = dists_gf * np.cos(qdrs_gf_rad) # [m] North
+
+                        
+                        # Generate data for each geofence segment 0 to 1, 1 to 2, 2 to 3 ..... n to 0.
+                        dxs_gf = np.array([])
+                        dys_gf = np.array([])
+                        for k in range(len(coordinates)):
+                            x_from = xs_gf[k]
+                            y_from = ys_gf[k]
+                            # if last elament (needs to be connected to first element)
+                            if k == (len(coordinates) - 1):
+                                x_to = xs_gf[0]
+                                y_to = ys_gf[0]
+                            else:
+                                x_to = xs_gf[k + 1]
+                                y_to = ys_gf[k + 1]
+                            
+                            dxs_gf = np.append(dxs_gf, x_to - x_from)
+                            dys_gf = np.append(dys_gf, y_to - y_from)
+
+                        # calculate values (phis) of rotation of geofence segments
+                        phis_gf = np.arctan2(dys_gf, dxs_gf)
+                        x_hats_prime = np.transpose(np.array([np.cos(phis_gf), np.sin(phis_gf)]))
+                        y_hats_prime = np.transpose(np.array([-np.sin(phis_gf), np.cos(phis_gf)]))
 
                     # Add each other other aircraft to clipper as clip
                     for j in range(np.shape(i_other)[0]):
@@ -337,11 +381,123 @@ class SSD_Drone(ConflictResolution):
                         # Add scaled VO to clipper
                         pc.AddPath(VO, pyclipper.PT_CLIP, True)
 
+                        # Add Geofence if available
+                        if (geofence_defined):
+                            # Determine relative distance vector w.r.t. intruder
+                            qdr_int, dist_int = geo.qdrdist(ownship.lat[i], ownship.lon[i], ownship.lat[i_other[j]], ownship.lon[i_other[j]])
+                            qdr_int_rad = np.deg2rad(qdr_int)
+                            x_int = dist_int * nm * np.sin(qdr_int_rad)
+                            y_int = dist_int * nm * np.cos(qdr_int_rad)
+                            d_int = np.array([x_int, y_int])
+                            trk_int = np.deg2rad(ownship.trk[i_other[j]])
+                            gs_int = ownship.gs[i_other[j]]
+                            v_int = np.array([gs_int * np.sin(trk_int), gs_int * np.cos(trk_int)])
+
+                            v_int_dot_y_hats_prime = np.array([])
+                            for k in range(len(y_hats_prime)):
+                                v_int_dot_y_hats_prime = np.append(v_int_dot_y_hats_prime, np.dot(v_int, y_hats_prime[k]))
+                            candidate_gf_segments = np.where(v_int_dot_y_hats_prime < 0)[0]
+
+                            d_int_dot_x_hats_prime = np.array([])
+                            d_int_dot_y_hats_prime = np.array([])
+
+                            ds_geo = np.array([]) # [m] Array of distanced w.r.t. geofence of wonship
+                            for k in candidate_gf_segments:
+                                d_int_dot_x_hats_prime = np.append(d_int_dot_x_hats_prime, np.dot(d_int, x_hats_prime[k]))
+                                d_int_dot_y_hats_prime = np.append(d_int_dot_y_hats_prime, np.dot(d_int, y_hats_prime[k]))
+
+                                ds_geo = np.append(ds_geo, -np.dot(np.array([xs_gf[k], ys_gf[k]]), y_hats_prime[k]))
+                            
+                            phis_prime_gf = 0.5 * np.arctan2(-1. * d_int_dot_x_hats_prime, d_int_dot_y_hats_prime)
+
+                            # Total rotation angle
+                            phis_total_gf = phis_gf[candidate_gf_segments] + phis_prime_gf
+
+                            # Secondary axis system primary axes
+                            x_hats_2prime = np.transpose(np.array([np.cos(phis_total_gf), np.sin(phis_total_gf)]))
+                            y_hats_2prime = np.transpose(np.array([-np.sin(phis_total_gf), np.cos(phis_total_gf)]))
+                            
+                            # Arrays of dot products
+                            d_int_dot_x_hats_2prime = np.array([])
+                            d_int_dot_y_hats_2prime = np.array([])
+                            v_int_dot_x_hats_2prime = np.array([])
+                            v_int_dot_y_hats_2prime = np.array([])
+                            d_int_dot_v_int = np.array([])
+
+                            for k in range(len(x_hats_2prime)):
+                                d_int_dot_x_hats_2prime = np.append(d_int_dot_x_hats_2prime, np.dot(d_int, x_hats_2prime[k]))
+                                d_int_dot_y_hats_2prime = np.append(d_int_dot_y_hats_2prime, np.dot(d_int, y_hats_2prime[k]))
+
+                                v_int_dot_x_hats_2prime = np.append(v_int_dot_x_hats_2prime, np.dot(v_int, x_hats_2prime[k]))
+                                v_int_dot_y_hats_2prime = np.append(v_int_dot_y_hats_2prime, np.dot(v_int, y_hats_2prime[k]))
+
+                                d_int_dot_v_int = np.append(d_int_dot_v_int, np.dot(d_int, v_int))
+
+                            # Constants needed to compute geometry of geofence VO's
+                            C1s = 1. + np.sin(phis_prime_gf) * d_int_dot_x_hats_2prime / ds_geo
+                            C2s = 1. + np.cos(phis_prime_gf) * d_int_dot_y_hats_2prime / ds_geo
+                            C3s = -2. * v_int_dot_x_hats_2prime - np.sin(phis_prime_gf) * d_int_dot_v_int / ds_geo
+                            C4s = -2. * v_int_dot_y_hats_2prime - np.cos(phis_prime_gf) * d_int_dot_v_int / ds_geo
+                            
+                            # Center points of geofence VO geometries in double rotated axis system
+                            Cxs_2prime = - C3s / (2. * C1s)
+                            Cys_2prime = - C4s / (2. * C2s)
+
+                            # semi major axes squared (in case of ellipse)
+                            a2s = (- gs_int**2 + C2s * Cys_2prime**2) / C1s + Cxs_2prime**2
+                            b2s = (- gs_int**2 + C1s * Cxs_2prime**2) / C2s + Cys_2prime**2
+
+                            # Loop trough a2s and b2s to construct VOs, categorize them 
+                            for k in range(len(a2s)):
+                                # if ownship outside gf segment TODO: UPDATE FOR OUTSIDE the geofence cases!!!!!
+                                if (a2s[k] <= 0):
+                                    continue
+                                # If Ellipse
+                                elif (b2s[k] > 0):
+                                    ellipse_angles = np.linspace(0., 2. * np.pi, N_angle)
+                                    rotated_xs = np.sqrt(a2s[k]) * np.cos(ellipse_angles) + Cxs_2prime[k]
+                                    rotated_ys = np.sqrt(b2s[k]) * np.sin(ellipse_angles) + Cys_2prime[k]
+                                # If hyperbola
+                                else:
+                                    tmax = np.log((20. * vmax + np.sqrt(20.**2 * vmax**2 + a2s[k])) / np.sqrt(a2s[k]))
+                                    tmin = -tmax
+                                    if (phis_prime_gf[k] > 0):
+                                        t = np.linspace(tmin, tmax, N_angle)
+                                        rotated_xs = -np.sqrt(a2s[k]) * np.cosh(t) + Cxs_2prime[k]
+                                    else:
+                                        t = np.linspace(tmax, tmin, N_angle)
+                                        rotated_xs = np.sqrt(a2s[k]) * np.cosh(t) + Cxs_2prime[k]
+                                    rotated_ys = np.sqrt(-b2s[k]) * np.sinh(t) + Cys_2prime[k]
+                                non_rotated_xs = rotated_xs * np.cos(phis_total_gf[k]) - rotated_ys * np.sin(phis_total_gf[k])
+                                non_rotated_ys = rotated_xs * np.sin(phis_total_gf[k]) + rotated_ys * np.cos(phis_total_gf[k])
+
+                                # Add non rotated VO's to clipper
+                                xy_gf = []
+                                xy_gf.append(non_rotated_xs)
+                                xy_gf.append(non_rotated_ys)
+                                xy_gf = np.array(xy_gf)
+                                xy_gf = np.transpose(xy_gf)
+                                xy_gf_tuple = tuple(map(tuple, xy_gf))
+
+                                # Scale VO to clipper
+                                VO = pyclipper.scale_to_clipper(xy_gf_tuple)
+                                # Add scaled VO to clipper
+                                try:
+                                    pc.AddPath(VO, pyclipper.PT_CLIP, True)
+                                except:
+                                    pass
+
                     # Execute clipper command
                     FRV = pyclipper.scale_from_clipper(
                         pc.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
 
                     ARV = pc.Execute(pyclipper.CT_DIFFERENCE, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
+
+                    # Make another clipper object for extra intersections
+                    pc2 = pyclipper.Pyclipper()
+                    # Put the ARV in there, make sure it's not empty
+                    if len(ARV) > 0:
+                        pc2.AddPaths(ARV, pyclipper.PT_CLIP, True)
 
                     # Scale back
                     ARV = pyclipper.scale_from_clipper(ARV)
@@ -379,6 +535,20 @@ class SSD_Drone(ConflictResolution):
                         # Calculate areas and store in asas
                         FRV_area_loc[i] = self.area(FRV)
                         ARV_area_loc[i] = self.area(ARV)
+
+                        # Small ring
+                        xyp = (tuple(map(tuple, np.flipud(xyc * min(vmax, ownship.tas[i] + 0.1)))),
+                                tuple(map(tuple, xyc * max(vmin, ownship.tas[i] - 0.1))))
+                        part = pyclipper.scale_to_clipper(xyp)
+                        pc2.AddPaths(part, pyclipper.PT_SUBJECT, True)
+
+                        # Execute clipper command
+                        ARV_calc = pyclipper.scale_from_clipper(
+                            pc2.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
+                        
+                        # If no smaller ARV is found, take the full ARV
+                        if len(ARV_calc) == 0:
+                            ARV_calc = ARV
 
                         ARV_calc = ARV
                         # Update calculatable ARV for resolutions
@@ -458,7 +628,7 @@ class SSD_Drone(ConflictResolution):
                     # Check timeout for conflict resolution
                     current_time = time.time()
                     delta_cr_time = current_time - conflictresolutiontime.cr_time[i]
-
+                    
                     if (delta_cr_time > 4.0):
                         conflictresolutiontime.cr_time[i] = current_time
                         # send resolution over mqtt
@@ -477,8 +647,8 @@ class SSD_Drone(ConflictResolution):
                         mqtt_publisher.loop_stop()
 
                     # reset resolution as external parties have to respond to it
-                    conf.asase[i] = 0.
-                    conf.asasn[i] = 0.
+                    conf.asase[i] = gseast[i]
+                    conf.asasn[i] = gsnorth[i]
 
     def area(self, vset):
         """ This function calculates the area of the set of FRV or ARV """
