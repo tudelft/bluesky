@@ -236,5 +236,5 @@ class Poly(Shape):
 
     def checkInside(self, lat, lon, alt):
         points = np.vstack((lat,lon)).T
-        inside = np.all((self.border.contains_points(points), self.bottom <= alt, alt <= self.top), axis=0)
+        inside = np.all((self.border.contains_points(points)[0], self.bottom <= alt, alt <= self.top), axis=0)
         return inside
