@@ -1,6 +1,7 @@
 import bluesky as bs
 from bluesky.core import Entity, timed_function
 from bluesky import stack
+from bluesky.tools import areafilter
 
 import paho.mqtt.client as mqtt
 import threading
@@ -59,7 +60,7 @@ class C2CGeofenceReceiver(Entity):
         finally:
             self.lock.release()
 
-    def update_geofene_object(self, msg):
+    def update_geofence_object(self, msg):
         # Check if geofence already assigned before
         if str(msg['ac_id']) in self.geofence_objects.keys():
             self.geofence_objects[str(msg['ac_id'])].update(msg)
@@ -85,6 +86,7 @@ class C2CGeofenceReceiver(Entity):
                 remove_keys.append(key)
         
         for key in remove_keys:
+            self.geofence_objects[key].delete()
             self.geofence_objects.pop(key)
     
 class C2CGeofence(object):
@@ -96,7 +98,9 @@ class C2CGeofence(object):
         for i in range(len(msg['geozone'])):
             lat = float(msg['geozone'][i]['lat']) / 10**7 
             lon = float(msg['geozone'][i]['lon']) / 10**7 
-            self.geozone.append((lat, lon))
+            self.geozone.append(lat)
+            self.geozone.append(lon)
+        areafilter.defineArea('GF_' + str(self.ac_id), 'POLY', self.geozone)
     
     def update(self, msg):
         self.geozone = []
@@ -105,7 +109,13 @@ class C2CGeofence(object):
         for i in range(len(msg['geozone'])):
             lat = float(msg['geozone'][i]['lat']) / 10**7 
             lon = float(msg['geozone'][i]['lon']) / 10**7 
-            self.geozone.append((lat, lon))
+            self.geozone.append(lat)
+            self.geozone.append(lon)
+        areafilter.deleteArea('GF_' + str(self.ac_id))
+        areafilter.defineArea('GF_' + str(self.ac_id), 'POLY', self.geozone)
+
+    def delete(self):
+        areafilter.deleteArea('GF_' + str(self.ac_id))
 
 class MQTTC2CGeofenceReceiverClient(mqtt.Client):
     def __init__(self, c2c_geofence_object):
