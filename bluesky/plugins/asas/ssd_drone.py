@@ -1,4 +1,4 @@
-''' Conflict resolution based on the SSD algorithm. '''
+''' Conflict resolution based on the SSD algorithm described in: https://repository.tudelft.nl/islandora/object/uuid%3A4b92f6b0-dc40-4946-a1ae-7efd0df79401?collection=education '''
 import bluesky as bs
 import json
 import time
@@ -15,6 +15,7 @@ try:
     import pyclipper
 except ImportError:
     print("Could not import pyclipper, RESO SSD will not function")
+
 
 
 # TODO: not completely migrated yet to class-based implementation
