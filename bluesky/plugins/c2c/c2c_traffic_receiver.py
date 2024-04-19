@@ -12,8 +12,11 @@ import time
 
 import os
 
+c2c_traffic_receiver = None
+
 def init_plugin():
     # Instantiate C2CTraffic entity
+    global c2c_traffic_receiver
     c2c_traffic_receiver = C2CTrafficReceiver()
     # Configuration parameters
     config = {
