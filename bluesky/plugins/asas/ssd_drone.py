@@ -653,6 +653,8 @@ class SSD_Drone(ConflictResolution):
                         body['waypoint']['lat'] = int(lat_res * 10**7)
                         body['waypoint']['lon'] = int(lon_res * 10**7)
                         body['waypoint']['alt'] = int(alt_res * 10**3)
+                        body['tres'] = float(tres) 
+                        body['vres'] = float(dist_res * nm / tres)
 
                         mqtt_publisher = MQTTAvoidRequestPublisher()
                         mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
