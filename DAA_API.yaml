@@ -1,7 +1,7 @@
 asyncapi: '2.0.0'
 info:
   title: DAA API
-  version: '1.0.4'
+  version: '1.0.5'
   description: The DAA API enables users to perform tactical detect and avoid as service
 servers:
   mosquitto:
@@ -182,11 +182,19 @@ components:
         timestamp:
           type: integer
           format: uint32
-          description: "Unix time since epoch"
+          description: "Unix time since epoch at the moment the request is generated"
         waypoint:
           type: object
           description: "An avoidance waypoint which should be directly added as first waypoint to the flightplan"
           $ref: "#/components/schemas/AvoidWaypoint"
+        tres:
+          type: number
+          format: float
+          description: "time (s) to resolution waypoint since avoid_request triggered"
+        vres:
+          type: number
+          format: float
+          description: "desired speed to fly towards resolution waypoint in m/s"
       required:
         - ac_id
         - timestamp
