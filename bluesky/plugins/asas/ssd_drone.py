@@ -7,7 +7,7 @@ import paho.mqtt.client as mqtt
 from bluesky.traffic.asas import ConflictResolution
 from bluesky.tools import geo
 from bluesky.tools import areafilter
-from bluesky.tools.aero import nm
+from bluesky.tools.aero import nm, Rearth
 from bluesky import core
 import numpy as np
 # Try to import pyclipper
@@ -162,8 +162,9 @@ class SSD_Drone(ConflictResolution):
         # Relevant info from traf
         gsnorth = ownship.gsnorth
         gseast = ownship.gseast
-        lat = ownship.lat
-        lon = ownship.lon
+        delay = 5.0 # Delay introduced before executing avoidance manoeuvre
+        lat = ownship.lat + np.degrees(delay * ownship.gsnorth / Rearth)
+        lon = ownship.lon + np.degrees(delay * ownship.gseast / ownship.coslat / Rearth)
         ntraf = ownship.ntraf
         hdg = ownship.hdg
         gs_ap = ownship.ap.tas
