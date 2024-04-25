@@ -151,7 +151,7 @@ class SSD_Drone(ConflictResolution):
         N = 0
         # Parameters
         N_angle = 180  # [-] Number of points on circle (discretization)
-        hsep = bs.settings.asas_pzr  # [m] Horizontal separation (5 NM)
+        hsep = bs.settings.asas_pzr * nm  # [m] Horizontal separation (5 NM)
         margin = self.resofach  # [-] Safety margin for evasion
         hsepm = hsep * margin  # [m] Horizontal separation with safety margin
         alpham = 0.4999 * np.pi  # [rad] Maximum half-angle for VO
