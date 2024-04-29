@@ -35,6 +35,15 @@ def init_plugin():
 
     return config
 
+def get_signed_area_polygon(xs, ys):
+    signed_area = 0
+    for i in range(len(xs)):
+        if i == (len(xs) - 1):
+            signed_area += (xs[0] - xs[i]) * (ys[0] + ys[i])
+        else:
+            signed_area += (xs[i+1] - xs[i]) * (ys[i+1] + ys[i])
+    return signed_area
+
 class ConflictResolutionTime(core.Entity):
     ''' Entity of time when sent conflict resolution. '''
     def __init__(self):
@@ -330,6 +339,10 @@ class SSD_Drone(ConflictResolution):
                         xs_gf = dists_gf * np.sin(qdrs_gf_rad) # [m] East
                         ys_gf = dists_gf * np.cos(qdrs_gf_rad) # [m] North
 
+                        # revert geofence order if geofence is closkwise (signed area positive)
+                        if (get_signed_area_polygon(xs_gf, ys_gf) > 0):
+                            xs_gf = xs_gf[::-1]
+                            ys_gf = ys_gf[::-1]
                         
                         # Generate data for each geofence segment 0 to 1, 1 to 2, 2 to 3 ..... n to 0.
                         dxs_gf = np.array([])
@@ -658,6 +671,10 @@ class SSD_Drone(ConflictResolution):
                             xs_gf = dists_gf * np.sin(np.deg2rad(qdrs_gf)) # [m] East
                             ys_gf = dists_gf * np.cos(np.deg2rad(qdrs_gf)) # [m] North
                             
+                            if (get_signed_area_polygon(xs_gf, ys_gf) > 0):
+                                xs_gf = xs_gf[::-1]
+                                ys_gf = ys_gf[::-1]
+                            
                             # Generate data for each geofence segment 0 to 1, 1 to 2, 2 to 3 ..... n to 0.
                             dxs_gf = np.array([])
                             dys_gf = np.array([])
@@ -678,8 +695,8 @@ class SSD_Drone(ConflictResolution):
                             # calculate values (phis) of rotation of geofence segments
                             phis_gf = np.arctan2(dys_gf,dxs_gf)
                             y_hats_prime = np.array([-np.sin(phis_gf), np.cos(phis_gf)])
-                            d_geo = xs_gf * y_hats_prime[0] + ys_gf * y_hats_prime[1]
-                            dist_gf_frac = (-np.sin(phis_gf) * dx_n_res + np.cos(phis_gf) * dy_n_res)
+                            d_geo = -(xs_gf * y_hats_prime[0] + ys_gf * y_hats_prime[1])
+                            dist_gf_frac = -(-np.sin(phis_gf) * dx_n_res + np.cos(phis_gf) * dy_n_res)
 
                             projected_distances = d_geo[dist_gf_frac>0] * (1. / dist_gf_frac[dist_gf_frac>0])
                             
