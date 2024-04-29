@@ -640,6 +640,54 @@ class SSD_Drone(ConflictResolution):
                     if geofence_defined:
                         solution_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), lat_res, lon_res, 0)
 
+                        dx_n_res = dx_res / (dist_res * nm) # x normal vector element of resolution
+                        dy_n_res = dy_res / (dist_res * nm) # y normal vector element of resolution
+
+                        # Compensate solution to closest geofence segment
+                        if (not solution_in_geofence):
+                            # Loop through geofence coordinates
+                            geofence = areafilter.basic_shapes['GF_' + str(ownship.id[i])]
+                            coordinates = np.reshape(geofence.coordinates, (int(len(geofence.coordinates) / 2), 2))
+                            qdrs_gf = np.array([]) # [deg] in hdg CW
+                            dists_gf = np.array([]) # [m]
+                            for k in range(len(coordinates)):
+                                # Calculate relative qdrs and distances of geofence points w.r.t. ownship
+                                qdr_gf, dist_gf = geo.qdrdist(ownship.lat[i], ownship.lon[i], coordinates[k][0], coordinates[k][1])
+                                qdrs_gf = np.append(qdrs_gf, qdr_gf)
+                                dists_gf = np.append(dists_gf, dist_gf * nm)
+                            xs_gf = dists_gf * np.sin(np.deg2rad(qdrs_gf)) # [m] East
+                            ys_gf = dists_gf * np.cos(np.deg2rad(qdrs_gf)) # [m] North
+                            
+                            # Generate data for each geofence segment 0 to 1, 1 to 2, 2 to 3 ..... n to 0.
+                            dxs_gf = np.array([])
+                            dys_gf = np.array([])
+                            for k in range(len(coordinates)):
+                                x_from = xs_gf[k]
+                                y_from = ys_gf[k]
+                                # if last element (needs to be connected to first element)
+                                if k == (len(coordinates) - 1):
+                                    x_to = xs_gf[0]
+                                    y_to = ys_gf[0]
+                                else:
+                                    x_to = xs_gf[k + 1]
+                                    y_to = ys_gf[k + 1]
+                                
+                                dxs_gf = np.append(dxs_gf, x_to - x_from)
+                                dys_gf = np.append(dys_gf, y_to - y_from)
+
+                            # calculate values (phis) of rotation of geofence segments
+                            phis_gf = np.arctan2(dys_gf,dxs_gf)
+                            y_hats_prime = np.array([-np.sin(phis_gf), np.cos(phis_gf)])
+                            d_geo = xs_gf * y_hats_prime[0] + ys_gf * y_hats_prime[1]
+                            dist_gf_frac = (-np.sin(phis_gf) * dx_n_res + np.cos(phis_gf) * dy_n_res)
+
+                            projected_distances = d_geo[dist_gf_frac>0] * (1. / dist_gf_frac[dist_gf_frac>0])
+                            
+                            # Recalculate resolution
+                            dist_res = min(projected_distances) / nm
+                            lat_res, lon_res = geo.qdrpos(ownship.lat[i], ownship.lon[i], qdr_res, dist_res)
+                            solution_in_geofence = True
+
                     # Check timeout for conflict resolution
                     current_time = time.time()
                     delta_cr_time = current_time - conflictresolutiontime.cr_time[i]
