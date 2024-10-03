@@ -45,8 +45,13 @@ class C2CTrafficPublisher(Entity):
         
         # Publish traffic not received by c2ctrafficreceiver
         if (traf_receiver.c2c_traffic_receiver is not None):
+            # Upper cased keys
+            upper_keys = []
+            for key in traf_receiver.c2c_traffic_receiver.traffic_objects.keys():
+                upper_keys.append(key.upper())
+                    
             for i in range(bs.traf.ntraf):
-                if bs.traf.id[i] not in traf_receiver.c2c_traffic_receiver.traffic_objects.keys():
+                if bs.traf.id[i] not in upper_keys:
                     # send resolution over mqtt
                     body = {}
                     body['ac_id'] = str(bs.traf.id[i])
