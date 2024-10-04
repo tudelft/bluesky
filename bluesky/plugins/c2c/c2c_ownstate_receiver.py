@@ -12,8 +12,11 @@ import time
 
 import os
 
+c2c_ownstate_receiver = None
+
 def init_plugin():
     # Instantiate C2COwnstate entity
+    global c2c_ownstate_receiver
     c2c_ownstate_receiver = C2COwnstateReceiver()
     # Configuration parameters
     config = {
