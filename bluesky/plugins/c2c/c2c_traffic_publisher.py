@@ -4,6 +4,7 @@ from bluesky.core import Entity, timed_function
 import paho.mqtt.client as mqtt
 import numpy as np
 import bluesky.plugins.c2c.c2c_traffic_receiver as traf_receiver
+import bluesky.plugins.c2c.c2c_ownstate_receiver as ownstate_receiver
 
 import json
 
@@ -44,10 +45,13 @@ class C2CTrafficPublisher(Entity):
     def publish_c2c_traffic(self):
         
         # Publish traffic not received by c2ctrafficreceiver
-        if (traf_receiver.c2c_traffic_receiver is not None):
+        if ((traf_receiver.c2c_traffic_receiver is not None) and (ownstate_receiver.c2c_ownstate_receiver is not None)):
             # Upper cased keys
             upper_keys = []
             for key in traf_receiver.c2c_traffic_receiver.traffic_objects.keys():
+                upper_keys.append(key.upper())
+
+            for key in ownstate_receiver.c2c_ownstate_receiver.traffic_objects.keys():
                 upper_keys.append(key.upper())
                     
             for i in range(bs.traf.ntraf):
