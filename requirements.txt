@@ -1,9 +1,9 @@
-numpy
+numpy==1.26.4
 scipy
 matplotlib
 msgpack >= 1.0.0
 zmq
-pandas
+pandas==2.2.2
 bluesky-simdata
 paho-mqtt==1.6.1
-pyclipper
+pyclipper==1.3.0
