@@ -51,7 +51,7 @@ class C2CTrafficPublisher(Entity):
             for key in traf_receiver.c2c_traffic_receiver.traffic_objects.keys():
                 upper_keys.append(key.upper())
 
-            for key in ownstate_receiver.c2c_ownstate_receiver.traffic_objects.keys():
+            for key in ownstate_receiver.c2c_ownstate_receiver.ownstate_objects.keys():
                 upper_keys.append(key.upper())
                     
             for i in range(bs.traf.ntraf):
