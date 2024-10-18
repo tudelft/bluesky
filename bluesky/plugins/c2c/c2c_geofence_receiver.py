@@ -100,7 +100,17 @@ class C2CGeofence(object):
             lon = float(msg['geozone'][i]['lon']) / 10**7 
             self.geozone.append(lat)
             self.geozone.append(lon)
-        areafilter.defineArea('GF_' + str(self.ac_id), 'POLY', self.geozone)
+        
+        area_created, area_type = areafilter.defineArea('GF_' + str(self.ac_id), 'POLY', self.geozone)
+
+        if area_created:
+            # Debug information
+            print(str(self.ac_id) + " has a defined Geofence area: " + str(areafilter.hasArea('GF_' + str(self.ac_id))) + ", with type: " + area_type)
+            print(str(self.ac_id) + " geofence has the following waypoints: ")
+            for i in range(0, self.geozone, 2):
+                print("Lat: " + str(self.geozone[i]) + ", Lon: " + str(self.geozone[i+1]))
+        else:
+            print("Geofence creation for " + str(self.ac_id) + " failed with error: " + area_type)
     
     def update(self, msg):
         self.geozone = []
