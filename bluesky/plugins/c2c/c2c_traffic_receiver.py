@@ -50,8 +50,8 @@ class C2CTrafficReceiver(Entity):
                 parsed_msg = json.loads(msg.payload)
                 self.mqtt_msg_buf.append(parsed_msg)
                 # Debugging
-                print("MQTT message received:")
-                print(parsed_msg)
+                # print("MQTT message received:")
+                # print(parsed_msg)
         finally:
             self.lock.release()
 

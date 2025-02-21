@@ -10,13 +10,15 @@ from bluesky.tools import areafilter
 from bluesky.tools.aero import nm, Rearth
 from bluesky import core
 import numpy as np
+import sys
 # Try to import pyclipper
 try:
     import pyclipper
 except ImportError:
     print("Could not import pyclipper, RESO SSD will not function")
 
-
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 # TODO: not completely migrated yet to class-based implementation
 
@@ -80,7 +82,6 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
 class SSD_Drone(ConflictResolution):
     def loaded_pyclipper():
         """ Return true if pyclipper is successfully loaded """
-        import sys
         return "pyclipper" in sys.modules
 
     def detect(asas, traf):
@@ -315,42 +316,47 @@ class SSD_Drone(ConflictResolution):
                     # Add circles (ring-shape) to clipper as subject
                     pc.AddPaths(pyclipper.scale_to_clipper(circle_tup), pyclipper.PT_SUBJECT, True)
 
-                    # If there is a geofence, calculate relative variables:
+                    # If there is a geofence and the ownship is within the geofence, calculate relative variables:
                     geofence_defined = False
                     try:
                         areafilter.basic_shapes['GF_' + str(ownship.id[i])]
                     except:
                         pass
                     else:
+                        ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), ownship.lat[i], ownship.lon[i], 0)
+                        if not ownship_in_geofence:
+                            eprint(str(ownship.id[i]) + " is not within the currently active geofence")
+                            pass
+
                         geofence_defined = True
                         # Load geofence shape
                         geofence = areafilter.basic_shapes['GF_' + str(ownship.id[i])]
                         # Loop through geofence coordinates
                         coordinates = np.reshape(geofence.coordinates, (int(len(geofence.coordinates) / 2), 2))
-                        qdrs_gf = np.array([]) # [deg] in hdg CW
-                        dists_gf = np.array([]) # [m]
+                        qdrs_gf = np.empty([len(coordinates)], dtype=float) # [deg] in hdg CW
+                        dists_gf = np.empty([len(coordinates)], dtype=float) # [m]
                         for k in range(len(coordinates)):
                             # Calculate relative qdrs and distances of geofence points w.r.t. ownship
                             qdr_gf, dist_gf = geo.qdrdist(ownship.lat[i], ownship.lon[i], coordinates[k][0], coordinates[k][1])
-                            qdrs_gf = np.append(qdrs_gf, qdr_gf)
-                            dists_gf = np.append(dists_gf, dist_gf * nm)
+                            qdrs_gf[k] = qdr_gf
+                            dists_gf[k] = dist_gf * nm
 
                         qdrs_gf_rad = np.deg2rad(qdrs_gf)
                         xs_gf = dists_gf * np.sin(qdrs_gf_rad) # [m] East
                         ys_gf = dists_gf * np.cos(qdrs_gf_rad) # [m] North
 
-                        # revert geofence order if geofence is closkwise (signed area positive)
+                        # revert geofence order if geofence is clockwise (signed area positive)
                         if (get_signed_area_polygon(xs_gf, ys_gf) > 0):
                             xs_gf = xs_gf[::-1]
                             ys_gf = ys_gf[::-1]
                         
                         # Generate data for each geofence segment 0 to 1, 1 to 2, 2 to 3 ..... n to 0.
-                        dxs_gf = np.array([])
-                        dys_gf = np.array([])
+                        dxs_gf = np.empty([len(coordinates)], dtype=float)
+                        dys_gf = np.empty([len(coordinates)], dtype=float)
                         for k in range(len(coordinates)):
                             x_from = xs_gf[k]
                             y_from = ys_gf[k]
-                            # if last elament (needs to be connected to first element)
+                            # if last element (needs to be connected to first element)
                             if k == (len(coordinates) - 1):
                                 x_to = xs_gf[0]
                                 y_to = ys_gf[0]
@@ -358,15 +364,15 @@ class SSD_Drone(ConflictResolution):
                                 x_to = xs_gf[k + 1]
                                 y_to = ys_gf[k + 1]
                             
-                            dxs_gf = np.append(dxs_gf, x_to - x_from)
-                            dys_gf = np.append(dys_gf, y_to - y_from)
+                            dxs_gf[k] = x_to - x_from
+                            dys_gf[k] = y_to - y_from
 
                         # calculate values (phis) of rotation of geofence segments
                         phis_gf = np.arctan2(dys_gf, dxs_gf)
                         x_hats_prime = np.transpose(np.array([np.cos(phis_gf), np.sin(phis_gf)]))
                         y_hats_prime = np.transpose(np.array([-np.sin(phis_gf), np.cos(phis_gf)]))
 
-                    # Add each other other aircraft to clipper as clip
+                    # Add each other aircraft to clipper as clip
                     for j in range(np.shape(i_other)[0]):
                         ## Debug prints
                         ## print(traf.id[i] + " - " + traf.id[i_other[j]])
@@ -408,20 +414,20 @@ class SSD_Drone(ConflictResolution):
                             gs_int = ownship.gs[i_other[j]]
                             v_int = np.array([gs_int * np.sin(trk_int), gs_int * np.cos(trk_int)])
 
-                            v_int_dot_y_hats_prime = np.array([])
+                            v_int_dot_y_hats_prime = np.empty([len(y_hats_prime)], dtype=float)
                             for k in range(len(y_hats_prime)):
-                                v_int_dot_y_hats_prime = np.append(v_int_dot_y_hats_prime, np.dot(v_int, y_hats_prime[k]))
+                                v_int_dot_y_hats_prime[k] = np.dot(v_int, y_hats_prime[k])
                             candidate_gf_segments = np.where(v_int_dot_y_hats_prime < 0)[0]
 
-                            d_int_dot_x_hats_prime = np.array([])
-                            d_int_dot_y_hats_prime = np.array([])
+                            d_int_dot_x_hats_prime = np.empty([len(candidate_gf_segments)], dtype=float)
+                            d_int_dot_y_hats_prime = np.empty([len(candidate_gf_segments)], dtype=float)
 
-                            ds_geo = np.array([]) # [m] Array of distanced w.r.t. geofence of wonship
-                            for k in candidate_gf_segments:
-                                d_int_dot_x_hats_prime = np.append(d_int_dot_x_hats_prime, np.dot(d_int, x_hats_prime[k]))
-                                d_int_dot_y_hats_prime = np.append(d_int_dot_y_hats_prime, np.dot(d_int, y_hats_prime[k]))
+                            ds_geo = np.empty([len(candidate_gf_segments)], dtype=float) # [m] Array of distanced w.r.t. geofence of ownship
+                            for q, k in enumerate(candidate_gf_segments):
+                                d_int_dot_x_hats_prime[q] = np.dot(d_int, x_hats_prime[k])
+                                d_int_dot_y_hats_prime[q] = np.dot(d_int, y_hats_prime[k])
 
-                                ds_geo = np.append(ds_geo, -np.dot(np.array([xs_gf[k], ys_gf[k]]), y_hats_prime[k]))
+                                ds_geo[q] = -np.dot(np.array([xs_gf[k], ys_gf[k]]), y_hats_prime[k])
                             
                             phis_prime_gf = 0.5 * np.arctan2(-1. * d_int_dot_x_hats_prime, d_int_dot_y_hats_prime)
 
@@ -433,20 +439,20 @@ class SSD_Drone(ConflictResolution):
                             y_hats_2prime = np.transpose(np.array([-np.sin(phis_total_gf), np.cos(phis_total_gf)]))
                             
                             # Arrays of dot products
-                            d_int_dot_x_hats_2prime = np.array([])
-                            d_int_dot_y_hats_2prime = np.array([])
-                            v_int_dot_x_hats_2prime = np.array([])
-                            v_int_dot_y_hats_2prime = np.array([])
-                            d_int_dot_v_int = np.array([])
+                            d_int_dot_x_hats_2prime = np.empty([len(x_hats_2prime)], dtype=float)
+                            d_int_dot_y_hats_2prime = np.empty([len(x_hats_2prime)], dtype=float)
+                            v_int_dot_x_hats_2prime = np.empty([len(x_hats_2prime)], dtype=float)
+                            v_int_dot_y_hats_2prime = np.empty([len(x_hats_2prime)], dtype=float)
+                            d_int_dot_v_int = np.empty([len(x_hats_2prime)], dtype=float)
 
                             for k in range(len(x_hats_2prime)):
-                                d_int_dot_x_hats_2prime = np.append(d_int_dot_x_hats_2prime, np.dot(d_int, x_hats_2prime[k]))
-                                d_int_dot_y_hats_2prime = np.append(d_int_dot_y_hats_2prime, np.dot(d_int, y_hats_2prime[k]))
+                                d_int_dot_x_hats_2prime[k] = np.dot(d_int, x_hats_2prime[k])
+                                d_int_dot_y_hats_2prime[k] = np.dot(d_int, y_hats_2prime[k])
 
-                                v_int_dot_x_hats_2prime = np.append(v_int_dot_x_hats_2prime, np.dot(v_int, x_hats_2prime[k]))
-                                v_int_dot_y_hats_2prime = np.append(v_int_dot_y_hats_2prime, np.dot(v_int, y_hats_2prime[k]))
+                                v_int_dot_x_hats_2prime[k] = np.dot(v_int, x_hats_2prime[k])
+                                v_int_dot_y_hats_2prime[k] = np.dot(v_int, y_hats_2prime[k])
 
-                                d_int_dot_v_int = np.append(d_int_dot_v_int, np.dot(d_int, v_int))
+                                d_int_dot_v_int[k] = np.dot(d_int, v_int)
 
                             # Constants needed to compute geometry of geofence VO's
                             C1s = 1. + np.sin(phis_prime_gf) * d_int_dot_x_hats_2prime / ds_geo
@@ -640,7 +646,7 @@ class SSD_Drone(ConflictResolution):
                     lat_res, lon_res = geo.qdrpos(ownship.lat[i], ownship.lon[i], qdr_res, dist_res)
                     alt_res = ownship.alt[i] # [m]
 
-                    # Check reesolution in geofence
+                    # Check resolution in geofence
                     geofence_defined = False
                     solution_in_geofence = True
                     try:
@@ -649,8 +655,11 @@ class SSD_Drone(ConflictResolution):
                         pass
                     else:
                         geofence_defined = True
+                        ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), ownship.lat[i], ownship.lon[i], 0)
+                        if not ownship_in_geofence:
+                            eprint(str(ownship.id[i]) + " is not within the currently active geofence")
 
-                    if geofence_defined:
+                    if geofence_defined and ownship_in_geofence:
                         solution_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), lat_res, lon_res, 0)
 
                         dx_n_res = dx_res / (dist_res * nm) # x normal vector element of resolution
@@ -661,13 +670,14 @@ class SSD_Drone(ConflictResolution):
                             # Loop through geofence coordinates
                             geofence = areafilter.basic_shapes['GF_' + str(ownship.id[i])]
                             coordinates = np.reshape(geofence.coordinates, (int(len(geofence.coordinates) / 2), 2))
-                            qdrs_gf = np.array([]) # [deg] in hdg CW
-                            dists_gf = np.array([]) # [m]
+                            qdrs_gf = np.empty([len(coordinates)], dtype=float) # [deg] in hdg CW
+                            dists_gf = np.empty([len(coordinates)], dtype=float) # [m]
                             for k in range(len(coordinates)):
                                 # Calculate relative qdrs and distances of geofence points w.r.t. ownship
                                 qdr_gf, dist_gf = geo.qdrdist(ownship.lat[i], ownship.lon[i], coordinates[k][0], coordinates[k][1])
-                                qdrs_gf = np.append(qdrs_gf, qdr_gf)
-                                dists_gf = np.append(dists_gf, dist_gf * nm)
+                                qdrs_gf[k] = qdr_gf
+                                dists_gf[k] = dist_gf * nm
+                            
                             xs_gf = dists_gf * np.sin(np.deg2rad(qdrs_gf)) # [m] East
                             ys_gf = dists_gf * np.cos(np.deg2rad(qdrs_gf)) # [m] North
                             
@@ -676,8 +686,8 @@ class SSD_Drone(ConflictResolution):
                                 ys_gf = ys_gf[::-1]
                             
                             # Generate data for each geofence segment 0 to 1, 1 to 2, 2 to 3 ..... n to 0.
-                            dxs_gf = np.array([])
-                            dys_gf = np.array([])
+                            dxs_gf = np.empty([len(coordinates)], dtype=float)
+                            dys_gf = np.empty([len(coordinates)], dtype=float)
                             for k in range(len(coordinates)):
                                 x_from = xs_gf[k]
                                 y_from = ys_gf[k]
@@ -689,8 +699,8 @@ class SSD_Drone(ConflictResolution):
                                     x_to = xs_gf[k + 1]
                                     y_to = ys_gf[k + 1]
                                 
-                                dxs_gf = np.append(dxs_gf, x_to - x_from)
-                                dys_gf = np.append(dys_gf, y_to - y_from)
+                                dxs_gf[k] = x_to - x_from
+                                dys_gf[k] = y_to - y_from
 
                             # calculate values (phis) of rotation of geofence segments
                             phis_gf = np.arctan2(dys_gf,dxs_gf)
@@ -721,6 +731,9 @@ class SSD_Drone(ConflictResolution):
                         body['waypoint']['alt'] = int(alt_res * 10**3)
                         body['tres'] = float(tres) 
                         body['vres'] = float(dist_res * nm / tres)
+
+                        eprint("Conflict Resolution msg: ")
+                        eprint(body)
 
                         mqtt_publisher = MQTTAvoidRequestPublisher()
                         mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
