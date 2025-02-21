@@ -55,10 +55,10 @@ class C2CTrafficPublisher(Entity):
                 upper_keys.append(key.upper())
             
             # For debugging
-            print("Bluesky Traffic ids:")
-            print(bs.traf.id)
-            print("Traffic and Ownstate keys:")
-            print(upper_keys)
+            # print("Bluesky Traffic ids:")
+            # print(bs.traf.id)
+            # print("Traffic and Ownstate keys:")
+            # print(upper_keys)
 
             for i in range(bs.traf.ntraf):
                 if bs.traf.id[i] not in upper_keys:

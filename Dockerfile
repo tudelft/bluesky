@@ -5,4 +5,4 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-CMD [ "python", "./BlueSky.py", "--headless", "--configfile","settings_c2c.cfg" , "--scenfile","c2c/test_c2c.scn"]
+CMD [ "python", "-u", "./BlueSky.py", "--headless", "--configfile","settings_c2c.cfg" , "--scenfile","c2c/test_c2c.scn"]
