@@ -12,6 +12,12 @@ import json
 import time
 
 import os
+import sys
+
+c2c_geofence_receiver_loop_flag = 1
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 def init_plugin():
     # Instantiate C2COwnstate entity
@@ -21,6 +27,10 @@ def init_plugin():
         'plugin_name': 'C2C_GEOFENCE_RECEIVER',
         'plugin_type': 'sim'
     }
+
+    if bs.settings.MQTT_debug:
+        eprint("C2C Geofence Receiver plugin loaded")
+
     return config
 
 class C2CGeofenceReceiver(Entity):
@@ -52,8 +62,7 @@ class C2CGeofenceReceiver(Entity):
     def copy_buffers(self):
         self.lock.acquire()
         try:
-            for msg in self.mqtt_msg_buf:
-                self.mqtt_msgs.append(msg)
+            self.mqtt_msgs.extend(self.mqtt_msg_buf)
 
             # Empty buffers
             self.mqtt_msg_buf = []
@@ -134,12 +143,23 @@ class MQTTC2CGeofenceReceiverClient(mqtt.Client):
 
     def run(self):
         self.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
-        self.subscribe("daa/geofence", 0)
         rc = self.loop_start()
+
+        while c2c_geofence_receiver_loop_flag == 1:
+            eprint("Waiting for Geofence Receiver MQTT client to connect...")
+            time.sleep(0.1)
+
+        self.subscribe("daa/geofence", 0)
         return rc
 
     def on_message(self, mqttc, obj, msg):
         self.c2c_geofence_object.recv_mqtt(msg)
+
+    def on_connect(self, mqttc, obj, flags, rc):
+        global c2c_geofence_receiver_loop_flag
+        c2c_geofence_receiver_loop_flag = 0
+        if bs.settings.MQTT_debug:
+            eprint("Geofence Receiver MQTT client connected with result code: ", mqtt.error_string(rc))
 
     def stop(self):
         self.loop_stop()
