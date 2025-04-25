@@ -11,8 +11,13 @@ import json
 import time
 
 import os
+import sys
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
+required_keys = ['ac_id', 'lat', 'lon', 'alt', 'vn', 've', 'vd']
 c2c_ownstate_receiver = None
+c2c_ownstate_receiver_loop_flag = 1
 
 def init_plugin():
     # Instantiate C2COwnstate entity
@@ -23,6 +28,10 @@ def init_plugin():
         'plugin_name': 'C2C_OWNSTATE_RECEIVER',
         'plugin_type': 'sim'
     }
+
+    if bs.settings.MQTT_debug:
+        eprint("C2C Ownstate Receiver plugin loaded")
+    
     return config
 
 class C2COwnstateReceiver(Entity):
@@ -54,8 +63,7 @@ class C2COwnstateReceiver(Entity):
     def copy_buffers(self):
         self.lock.acquire()
         try:
-            for msg in self.mqtt_msg_buf:
-                self.mqtt_msgs.append(msg)
+            self.mqtt_msgs.extend(self.mqtt_msg_buf)
 
             # Empty buffers
             self.mqtt_msg_buf = []
@@ -63,6 +71,13 @@ class C2COwnstateReceiver(Entity):
             self.lock.release()
 
     def update_ownstate_object(self, msg):
+
+        # Check if msg is valid
+        if not all(key in msg for key in required_keys) and None not in msg.values():
+            if bs.settings.MQTT_debug:
+                eprint("Received invalid or incomplete ownstate message, skipping...")
+            return
+
         # Check if ownstate already exists
         if str(msg['ac_id']) in self.ownstate_objects.keys():
             self.ownstate_objects[str(msg['ac_id'])].update(msg)
@@ -132,12 +147,30 @@ class MQTTC2COwnstateReceiverClient(mqtt.Client):
 
     def run(self):
         self.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
-        self.subscribe("daa/ownstate", 0)
         rc = self.loop_start()
+        while c2c_ownstate_receiver_loop_flag == 1:
+            eprint("Waiting for Ownstate MQTT client to connect...")
+            time.sleep(0.1)
+
+        self.subscribe("daa/ownstate", 0)
+        
         return rc
 
     def on_message(self, mqttc, obj, msg):
+        if bs.settings.MQTT_debug:
+            eprint("Ownstate Receiver MQTT client received message:")
         self.c2c_ownstate_object.recv_mqtt(msg)
+
+    def on_connect(self, mqttc, obj, flags, rc):
+        global c2c_ownstate_receiver_loop_flag
+        c2c_ownstate_receiver_loop_flag = 0
+        if bs.settings.MQTT_debug:
+            eprint("Ownstate Receiver MQTT client connected with result code: ", mqtt.error_string(rc))
+
+    def on_subscribe(self, mqttc, obj, mid, granted_qos):
+        if bs.settings.MQTT_debug:
+            eprint("Ownstate Receiver subscribed to: ", mid, " , with QoS level: ", granted_qos) # No idea how to get useful info from mid
+        return
 
     def stop(self):
         self.loop_stop()

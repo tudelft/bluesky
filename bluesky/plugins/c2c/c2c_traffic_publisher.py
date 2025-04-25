@@ -5,10 +5,16 @@ import paho.mqtt.client as mqtt
 import numpy as np
 import bluesky.plugins.c2c.c2c_traffic_receiver as traf_receiver
 import bluesky.plugins.c2c.c2c_ownstate_receiver as ownstate_receiver
-
+import time
 import json
 
 import os
+import sys
+
+c2c_traffic_publisher_loop_flag = 1
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 def init_plugin():
     # Instantiate C2CTraffic entity
@@ -18,17 +24,40 @@ def init_plugin():
         'plugin_name': 'C2C_TRAFFIC_PUBLISHER',
         'plugin_type': 'sim'
     }
+
+    if bs.settings.MQTT_debug:
+        eprint("C2C Traffic Publisher plugin loaded")
+    
     return config
 
 class MQTTC2CTrafficPublisher(mqtt.Client):
 
+    def __init__(self, c2c_traffic_object):
+        super().__init__()
+        self.c2c_traffic_object = c2c_traffic_object
+
+    def run(self):
+        # Make Traffic publisher MQTT client
+        self.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
+        self.loop_start()
+
+        while c2c_traffic_publisher_loop_flag == 1:
+            eprint("Waiting for Traffic Publisher MQTT client to connect...")
+            time.sleep(0.1)
+
     def on_connect(self, mqttc, obj, flags, rc):
+        global c2c_traffic_publisher_loop_flag
+        c2c_traffic_publisher_loop_flag = 0
+        if bs.settings.MQTT_debug:
+            eprint("Traffic Publisher MQTT client connected with result code: ", mqtt.error_string(rc))
         return
 
     def on_message(self, mqttc, obj, msg):
         return
 
     def on_publish(self, mqttc, obj, mid):
+        if bs.settings.MQTT_debug:
+            eprint("Traffic Publisher MQTT client published message with mid: ", mid)
         return
 
     def on_subscribe(self, mqttc, obj, mid, granted_qos):
@@ -36,14 +65,22 @@ class MQTTC2CTrafficPublisher(mqtt.Client):
 
     def on_log(self, mqttc, obj, level, string):
         return
+    
+    def stop(self):
+        self.loop_stop()
 
 class C2CTrafficPublisher(Entity):
     def __init__(self):
         super().__init__()
-
+        # Start mqtt client to read out control commands
+        self.mqtt_client = MQTTC2CTrafficPublisher(self)
+        self.mqtt_client.run()
+        
     @timed_function(dt=0.2)
     def publish_c2c_traffic(self):
         
+        # eprint("Number of bluesky traffic objects: ", bs.traf.ntraf)
+
         # Publish traffic not received by c2ctrafficreceiver
         if ((traf_receiver.c2c_traffic_receiver is not None) and (ownstate_receiver.c2c_ownstate_receiver is not None)):
             # Upper cased keys
@@ -55,10 +92,10 @@ class C2CTrafficPublisher(Entity):
                 upper_keys.append(key.upper())
             
             # For debugging
-            # print("Bluesky Traffic ids:")
-            # print(bs.traf.id)
-            # print("Traffic and Ownstate keys:")
-            # print(upper_keys)
+            # eprint("Bluesky Traffic ids:")
+            # eprint(bs.traf.id)
+            # eprint("Traffic and Ownstate keys:")
+            # eprint(upper_keys)
 
             for i in range(bs.traf.ntraf):
                 if bs.traf.id[i] not in upper_keys:
@@ -74,11 +111,7 @@ class C2CTrafficPublisher(Entity):
                     body['ve'] = int(bs.traf.gseast[i] * 10**3)
                     body['vd'] = int(-bs.traf.vs[i] * 10**3)
 
-                    mqtt_publisher = MQTTC2CTrafficPublisher()
-                    mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
-                    mqtt_publisher.loop_start()
-                    mqtt_publisher.publish('daa/traffic_out', payload=json.dumps(body))
-                    mqtt_publisher.loop_stop()
+                    self.mqtt_client.publish('daa/traffic_out', payload=json.dumps(body))
         # Send all     
         else:
             for i in range(bs.traf.ntraf):
@@ -94,11 +127,7 @@ class C2CTrafficPublisher(Entity):
                 body['ve'] = int(bs.traf.gseast[i] * 10**3)
                 body['vd'] = int(-bs.traf.vs[i] * 10**3)
 
-                mqtt_publisher = MQTTC2CTrafficPublisher()
-                mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
-                mqtt_publisher.loop_start()
-                mqtt_publisher.publish('daa/traffic_out', payload=json.dumps(body))
-                mqtt_publisher.loop_stop()
-
+                self.mqtt_client.publish('daa/traffic_out', payload=json.dumps(body))
+        return
 
 

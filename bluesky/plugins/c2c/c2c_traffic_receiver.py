@@ -1,6 +1,7 @@
 import bluesky as bs
 from bluesky.core import Entity, timed_function
 from bluesky import stack
+from bluesky.traffic.asas import ConflictResolution
 
 import paho.mqtt.client as mqtt
 import threading
@@ -11,8 +12,13 @@ import json
 import time
 
 import os
+import sys
+
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 c2c_traffic_receiver = None
+c2c_traffic_receiver_loop_flag = 1
 
 def init_plugin():
     # Instantiate C2CTraffic entity
@@ -23,6 +29,10 @@ def init_plugin():
         'plugin_name': 'C2C_TRAFFIC_RECEIVER',
         'plugin_type': 'sim'
     }
+    
+    if bs.settings.MQTT_debug:
+        eprint("C2C Traffic Receiver plugin loaded")
+    
     return config
 
 class C2CTrafficReceiver(Entity):
@@ -49,18 +59,13 @@ class C2CTrafficReceiver(Entity):
             if msg.topic == 'daa/traffic': 
                 parsed_msg = json.loads(msg.payload)
                 self.mqtt_msg_buf.append(parsed_msg)
-                # Debugging
-                # print("MQTT message received:")
-                # print(parsed_msg)
         finally:
             self.lock.release()
 
     def copy_buffers(self):
         self.lock.acquire()
         try:
-            for msg in self.mqtt_msg_buf:
-                self.mqtt_msgs.append(msg)
-
+            self.mqtt_msgs.extend(self.mqtt_msg_buf)
             # Empty buffers
             self.mqtt_msg_buf = []
         finally:
@@ -135,12 +140,22 @@ class MQTTC2CTrafficReceiverClient(mqtt.Client):
 
     def run(self):
         self.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
-        self.subscribe("daa/traffic", 0)
         rc = self.loop_start()
+        while c2c_traffic_receiver_loop_flag == 1:
+            eprint("Waiting for Traffic Receiver MQTT client to connect...")
+            time.sleep(0.1)
+        
+        self.subscribe("daa/traffic", 0)
         return rc
 
     def on_message(self, mqttc, obj, msg):
         self.c2c_traffic_object.recv_mqtt(msg)
+
+    def on_connect(self, mqttc, obj, flags, rc):
+        global c2c_traffic_receiver_loop_flag
+        c2c_traffic_receiver_loop_flag = 0
+        if bs.settings.MQTT_debug:
+            eprint("Traffic Receiver MQTT client connected with result code: ", mqtt.error_string(rc))
 
     def stop(self):
         self.loop_stop()
