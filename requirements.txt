@@ -4,6 +4,6 @@ matplotlib
 msgpack >= 1.0.0
 zmq
 pandas==2.2.2
-bluesky-simdata
+# bluesky-simdata
 paho-mqtt==1.6.1
 pyclipper==1.3.0
