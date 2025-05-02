@@ -73,10 +73,10 @@ class C2COwnstateReceiver(Entity):
     def update_ownstate_object(self, msg):
 
         # Check if msg is valid
-        if not all(key in msg for key in required_keys) and None not in msg.values():
-            if bs.settings.MQTT_debug:
-                eprint("Received invalid or incomplete ownstate message, skipping...")
-            return
+        # if not all(key in msg for key in required_keys) and None not in msg.values():
+        #     if bs.settings.MQTT_debug:
+        #         eprint("Received invalid or incomplete ownstate message, skipping...")
+        #     return
 
         # Check if ownstate already exists
         if str(msg['ac_id']) in self.ownstate_objects.keys():
@@ -158,7 +158,7 @@ class MQTTC2COwnstateReceiverClient(mqtt.Client):
 
     def on_message(self, mqttc, obj, msg):
         if bs.settings.MQTT_debug:
-            eprint("Ownstate Receiver MQTT client received message:")
+            eprint("Ownstate Receiver MQTT client received message: ", msg.topic, msg.payload)
         self.c2c_ownstate_object.recv_mqtt(msg)
 
     def on_connect(self, mqttc, obj, flags, rc):
