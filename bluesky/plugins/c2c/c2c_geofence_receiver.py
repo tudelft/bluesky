@@ -110,7 +110,7 @@ class C2CGeofence(object):
             self.geozone.append(lat)
             self.geozone.append(lon)
         
-        area_created, area_type = areafilter.defineArea('GF_' + str(self.ac_id), 'POLY', self.geozone)
+        area_created = areafilter.defineArea('GF_' + str(self.ac_id), 'POLY', self.geozone)
 
         # if area_created:
         #     # Debug information
