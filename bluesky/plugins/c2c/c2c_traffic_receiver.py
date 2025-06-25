@@ -12,10 +12,16 @@ import json
 import time
 
 import os
-import sys
+import logging
+import logging.config
+class UTCFormatter(logging.Formatter):
+    converter = time.gmtime
 
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
+with open('../logging_c2c.json', 'r') as f:
+    config = json.load(f)
+
+logging.config.dictConfig(config)
+logger = logging.getLogger("traffic_receiver")
 
 c2c_traffic_receiver = None
 c2c_traffic_receiver_loop_flag = 1
@@ -30,8 +36,7 @@ def init_plugin():
         'plugin_type': 'sim'
     }
     
-    if bs.settings.MQTT_debug:
-        eprint("C2C Traffic Receiver plugin loaded")
+    logger.info("C2C_TRAFFIC_RECEIVER plugin initialized")
     
     return config
 
@@ -142,7 +147,7 @@ class MQTTC2CTrafficReceiverClient(mqtt.Client):
         self.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
         rc = self.loop_start()
         while c2c_traffic_receiver_loop_flag == 1:
-            eprint("Waiting for Traffic Receiver MQTT client to connect...")
+            logger.debug("Waiting for Traffic Receiver MQTT client to connect...")
             time.sleep(0.1)
         
         self.subscribe("daa/traffic", 0)
@@ -154,8 +159,8 @@ class MQTTC2CTrafficReceiverClient(mqtt.Client):
     def on_connect(self, mqttc, obj, flags, rc):
         global c2c_traffic_receiver_loop_flag
         c2c_traffic_receiver_loop_flag = 0
-        if bs.settings.MQTT_debug:
-            eprint("Traffic Receiver MQTT client connected with result code: ", mqtt.error_string(rc))
+        logger.info("Traffic Receiver MQTT client connect with result code: %(code)s", {'code': mqtt.error_string(rc)})
 
     def stop(self):
+        logger.info("Stopping Traffic Receiver MQTT client")
         self.loop_stop()

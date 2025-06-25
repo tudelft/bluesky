@@ -1,6 +1,5 @@
 import bluesky as bs
 from bluesky.core import Entity, timed_function
-from bluesky import stack
 
 import paho.mqtt.client as mqtt
 import threading
@@ -11,9 +10,18 @@ import json
 import time
 
 import os
-import sys
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
+
+import logging
+import logging.config
+
+class UTCFormatter(logging.Formatter):
+    converter = time.gmtime
+
+with open('../logging_c2c.json', 'r') as f:
+    config = json.load(f)
+
+logging.config.dictConfig(config)
+logger = logging.getLogger("ownstate_receiver")
 
 required_keys = ['ac_id', 'lat', 'lon', 'alt', 'vn', 've', 'vd']
 c2c_ownstate_receiver = None
@@ -29,9 +37,7 @@ def init_plugin():
         'plugin_type': 'sim'
     }
 
-    if bs.settings.MQTT_debug:
-        eprint("C2C Ownstate Receiver plugin loaded")
-    
+    logger.info("C2C_OWNSTATE_RECEIVER plugin initialized")
     return config
 
 class C2COwnstateReceiver(Entity):
@@ -73,16 +79,21 @@ class C2COwnstateReceiver(Entity):
     def update_ownstate_object(self, msg):
 
         # Check if msg is valid
-        # if not all(key in msg for key in required_keys) and None not in msg.values():
-        #     if bs.settings.MQTT_debug:
-        #         eprint("Received invalid or incomplete ownstate message, skipping...")
-        #     return
-
-        # Check if ownstate already exists
-        if str(msg['ac_id']) in self.ownstate_objects.keys():
-            self.ownstate_objects[str(msg['ac_id'])].update(msg)
-        else:
-            self.ownstate_objects[str(msg['ac_id'])] = C2COwnstate(msg)
+        if None in msg.values():
+            logger.warning("Received invalid ownstate message: %(msg)s", {'msg': json.dumps(msg)})
+            return
+        
+        try:
+            # Check if ownstate already exists
+            if str(msg['ac_id']) in self.ownstate_objects.keys():
+                self.ownstate_objects[str(msg['ac_id'])].update(msg)
+            else:
+                self.ownstate_objects[str(msg['ac_id'])] = C2COwnstate(msg)
+        except TypeError as e:
+            logger.error("%(error)s encountered while updating ownstate object: %(msg)s", {'error': str(e), 'msg': json.dumps(msg)})
+            # Clean up ownstate object in case it was modified
+            self.ownstate_objects[str(msg['ac_id'])].remove()
+            return
         
 
     @timed_function(dt=0.05)
@@ -149,7 +160,7 @@ class MQTTC2COwnstateReceiverClient(mqtt.Client):
         self.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
         rc = self.loop_start()
         while c2c_ownstate_receiver_loop_flag == 1:
-            eprint("Waiting for Ownstate MQTT client to connect...")
+            logger.debug("Waiting for Ownstate MQTT client to connect...")
             time.sleep(0.1)
 
         self.subscribe("daa/ownstate", 0)
@@ -157,20 +168,17 @@ class MQTTC2COwnstateReceiverClient(mqtt.Client):
         return rc
 
     def on_message(self, mqttc, obj, msg):
-        if bs.settings.MQTT_debug:
-            eprint("Ownstate Receiver MQTT client received message: ", msg.topic, msg.payload)
+        logger.debug("Ownstate Receiver MQTT client received message: %(topic)s, %(payload)s", {'topic': msg.topic, 'payload': msg.payload.decode('utf-8')})
         self.c2c_ownstate_object.recv_mqtt(msg)
 
     def on_connect(self, mqttc, obj, flags, rc):
         global c2c_ownstate_receiver_loop_flag
         c2c_ownstate_receiver_loop_flag = 0
-        if bs.settings.MQTT_debug:
-            eprint("Ownstate Receiver MQTT client connected with result code: ", mqtt.error_string(rc))
+        logger.info("Ownstate Receiver MQTT client connect with result code: %(code)s", {'code': mqtt.error_string(rc)})
 
     def on_subscribe(self, mqttc, obj, mid, granted_qos):
-        if bs.settings.MQTT_debug:
-            eprint("Ownstate Receiver subscribed to: ", mid, " , with QoS level: ", granted_qos) # No idea how to get useful info from mid
         return
 
     def stop(self):
+        logger.info("Stopping Ownstate Receiver MQTT client...")
         self.loop_stop()

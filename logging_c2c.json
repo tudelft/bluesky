@@ -1,0 +1,70 @@
+{
+    "version": 1,
+    "disable_existing_loggers": false,
+    "formatters": {
+        "standard": {
+            "converter": "UTCFormatter",
+            "format": "%(asctime)s [%(name)s] %(levelname)s %(message)s"
+        },
+        "detailed": {
+            "converter": "UTCFormatter",
+            "format": "%(asctime)s [%(name)s] %(levelname)s %(module)s %(lineno)d %(message)s"
+        },
+        "simple": {
+            "converter": "UTCFormatter",
+            "format": "%(levelname)s %(message)s"
+        }
+    },
+    "handlers": {
+        "console_simple": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+            "stream": "ext://sys.stdout",
+            "level": "INFO"
+        },
+        "console_standard": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+            "formatter": "standard",
+            "level": "DEBUG"
+        },
+        "console_detailed": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+            "formatter": "detailed",
+            "level": "ERROR"
+        }
+    },
+    "loggers": {
+        "": {
+            "handlers": ["console_simple", "console_standard", "console_detailed"],
+            "level": "DEBUG",
+            "propagate": false
+        },
+        "ownstate_receiver": {
+            "handlers": ["console_standard"],
+            "level": "DEBUG",
+            "propagate": false
+        },
+        "geofence_receiver": {
+            "handlers": ["console_standard"],
+            "level": "INFO",
+            "propagate": false
+        },
+        "traffic_receiver": {
+            "handlers": ["console_standard"],
+            "level": "INFO",
+            "propagate": false
+        },
+        "traffic_publisher": {
+            "handlers": ["console_standard"],
+            "level": "INFO",
+            "propagate": false
+        },
+        "SSD_drone": {
+            "handlers": ["console_standard"],
+            "level": "DEBUG",
+            "propagate": false
+        }
+    }
+}

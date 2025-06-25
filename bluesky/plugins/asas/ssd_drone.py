@@ -19,14 +19,21 @@ try:
 except ImportError:
     print("Could not import pyclipper, RESO SSD will not function")
 
+import logging
+import logging.config
+class UTCFormatter(logging.Formatter):
+    converter = time.gmtime
+with open('../logging_c2c.json', 'r') as f:
+    config = json.load(f)
+
+logging.config.dictConfig(config)
+logger = logging.getLogger("SSD_drone")
+
 if bs.settings.DAA_profiling:
     import cProfile
     from pstats import SortKey
 
 c2c_avoid_request_publisher_loop_flag = 1
-
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
 
 def init_plugin():
 
@@ -40,6 +47,25 @@ def init_plugin():
         # The type of this plugin. For now, only simulation plugins are possible.
         'plugin_type':     'sim'
     }
+
+    logger.info("SSD_DRONE plugin initialized")
+
+    if bs.settings.DAA_debug:
+        logger.info("Extra DAA debugging enabled")
+    else:
+        logger.info("Extra DAA debugging disabled")
+
+    if bs.settings.DAA_profiling:
+        logger.info("Extra DAA profiling enabled")
+    else:
+        logger.info("Extra DAA profiling disabled")
+
+    if bs.settings.avoid_ownship_only:
+        logger.info("Sending avoidance requests only to aircraft registered in the C2C...")
+    else:
+        logger.info("Sending avoidance requests to all air traffic...")
+
+    logger.info("Conflict detection radius is set to %(radius)s [nm]", {'radius': str(bs.settings.DAA_radius)})
 
     return config
 
@@ -78,22 +104,20 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
         self.loop_start()
 
         while c2c_avoid_request_publisher_loop_flag == 1:
-            eprint("Waiting for Avoid Request Publisher MQTT client to connect...")
+            logger.debug("Waiting for Avoid Request Publisher MQTT client to connect...")
             time.sleep(0.1)
 
     def on_connect(self, mqttc, obj, flags, rc):
         global c2c_avoid_request_publisher_loop_flag
         c2c_avoid_request_publisher_loop_flag = 0
-        if bs.settings.MQTT_debug:
-            eprint("Avoid Request Publisher MQTT client connected with result code: ", mqtt.error_string(rc))
+        logger.info("Avoid Request Publisher MQTT client connect with result code: %(code)s", {'code': mqtt.error_string(rc)})
         return
 
     def on_message(self, mqttc, obj, msg):
         return
 
     def on_publish(self, mqttc, obj, mid):
-        if bs.settings.MQTT_debug:
-            eprint("Avoid Request Publisher MQTT client published message with mid: ", mid)
+        logger.debug("Avoid Request Publisher MQTT client published message with mid: %(mid)s", {'mid': str(mid)}) # ?? improve
         return
 
     def on_subscribe(self, mqttc, obj, mid, granted_qos):
@@ -299,8 +323,7 @@ class SSD_Drone(ConflictResolution):
                 if not bs.traf.id[i] in set(ownstate_receiver.c2c_ownstate_receiver.ownstate_objects.keys()):    
                     continue
 
-            if bs.settings.DAA_debug:
-                eprint("Not skipping SSD construction for " + str(bs.traf.id[i]) + " as it is in the ownship list")
+            logger.debug("Constructing SSD for %(ownship)s as it is registered in the C2C", {'ownship': str(bs.traf.id[i])})
             
             # Calculate SSD only for aircraft in conflict (See formulas appendix)
             if conf.inconf[i]:
@@ -379,8 +402,7 @@ class SSD_Drone(ConflictResolution):
                     else:
                         ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), ownship.lat[i], ownship.lon[i], 0)
                         if not ownship_in_geofence:
-                            if bs.settings.DAA_debug:
-                                eprint(str(ownship.id[i]) + " is not within the currently active geofence")
+                            logger.debug(str(ownship.id[i]) + " is not within the currently active geofence")
                             pass
 
                         geofence_defined = True
@@ -429,9 +451,6 @@ class SSD_Drone(ConflictResolution):
 
                     # Add each other aircraft to clipper as clip
                     for j in range(np.shape(i_other)[0]):
-                        if bs.settings.DAA_debug:
-                            eprint(bs.traf.id[i] + " - " + bs.traf.id[i_other[j]])
-                            eprint(dist[ind[j]])
                         # Scale VO when not in LOS
                         if dist[ind[j]] > hsepm:
                             # Normally VO shall be added of this other a/c
@@ -639,14 +658,13 @@ class SSD_Drone(ConflictResolution):
                 if not bs.traf.id[i] in c2c_ownship_ids:
                     continue
 
-            if bs.settings.DAA_debug:
-                eprint("Not skipping avoidance for " + str(bs.traf.id[i]) + " as it is in the ownship list")
+            logger.debug("Checking %(ownship)s for conflicts as it is registered in the C2C", {'ownship': str(bs.traf.id[i])})
             
             # Only those that are in conflict need to resolve
             if conf.inconf[i] and ARV[i] is not None and len(ARV[i]) > 0:
 
                 if bs.settings.DAA_debug or bs.settings.DAA_profiling:
-                    eprint(bs.traf.id[i] + " is in conflict, resolving...")
+                    logger.info("%(ownship) is in conflict, resolving...", {'ownship': str(bs.traf.id[i])})
 
                 # Loop through all exteriors and append. Afterwards concatenate
                 p = []
@@ -714,8 +732,8 @@ class SSD_Drone(ConflictResolution):
                 else:
                     geofence_defined = True
                     ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), ownship.lat[i], ownship.lon[i], 0)
-                    if bs.settings.DAA_debug and not ownship_in_geofence:
-                        eprint(str(ownship.id[i]) + " is not within the currently active geofence")
+                    if not ownship_in_geofence:
+                        logger.warning("%(ownship)s is not within the currently active geofence", {'ownship': str(bs.traf.id[i])})
 
                 if geofence_defined and ownship_in_geofence:
                     solution_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), lat_res, lon_res, 0)
@@ -791,10 +809,7 @@ class SSD_Drone(ConflictResolution):
                     # Make sure vres is not NaN
                     body['vres'] = float(dist_res * nm / tres) if not np.isclose(tres, 0.0) else 0.0
 
-                    if bs.settings.DAA_debug:
-                        eprint("Conflict Resolution msg: ")
-                        eprint(body)
-
+                    logger.debug("Sending avoid_request: %(body)s", {'body': json.dumps(body)})
                     avoid_request_publisher.mqtt_client.publish('daa/avoid_request', payload=json.dumps(body))
 
             # reset resolution as external parties have to respond to it

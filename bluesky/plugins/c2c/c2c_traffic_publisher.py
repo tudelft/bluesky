@@ -9,12 +9,18 @@ import time
 import json
 
 import os
-import sys
+import logging
+import logging.config
+class UTCFormatter(logging.Formatter):
+    converter = time.gmtime
+
+with open('../logging_c2c.json', 'r') as f:
+    config = json.load(f)
+
+logging.config.dictConfig(config)
+logger = logging.getLogger("traffic_publisher")
 
 c2c_traffic_publisher_loop_flag = 1
-
-def eprint(*args, **kwargs):
-    print(*args, file=sys.stderr, **kwargs)
 
 def init_plugin():
     # Instantiate C2CTraffic entity
@@ -25,8 +31,7 @@ def init_plugin():
         'plugin_type': 'sim'
     }
 
-    if bs.settings.MQTT_debug:
-        eprint("C2C Traffic Publisher plugin loaded")
+    logger.info("C2C_TRAFFIC_PUBLISHER plugin initialized")
     
     return config
 
@@ -42,22 +47,20 @@ class MQTTC2CTrafficPublisher(mqtt.Client):
         self.loop_start()
 
         while c2c_traffic_publisher_loop_flag == 1:
-            eprint("Waiting for Traffic Publisher MQTT client to connect...")
+            logger.debug("Waiting for Traffic Publisher MQTT client to connect...")
             time.sleep(0.1)
 
     def on_connect(self, mqttc, obj, flags, rc):
         global c2c_traffic_publisher_loop_flag
         c2c_traffic_publisher_loop_flag = 0
-        if bs.settings.MQTT_debug:
-            eprint("Traffic Publisher MQTT client connected with result code: ", mqtt.error_string(rc))
+        logger.info("Traffic Publisher MQTT client connect with result code: %(code)s", {'code': mqtt.error_string(rc)})
         return
 
     def on_message(self, mqttc, obj, msg):
         return
 
     def on_publish(self, mqttc, obj, mid):
-        if bs.settings.MQTT_debug:
-            eprint("Traffic Publisher MQTT client published message with mid: ", mid)
+        logger.debug("Traffic Publisher MQTT client published message with mid: %(mid)s", {'mid': str(mid)}) # ?? improve
         return
 
     def on_subscribe(self, mqttc, obj, mid, granted_qos):
@@ -67,6 +70,7 @@ class MQTTC2CTrafficPublisher(mqtt.Client):
         return
     
     def stop(self):
+        logger.info("Stopping Traffic Publisher MQTT client")
         self.loop_stop()
 
 class C2CTrafficPublisher(Entity):
