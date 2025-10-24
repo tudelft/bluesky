@@ -805,7 +805,7 @@ class SSD_Drone(ConflictResolution):
                     body['waypoint']['lat'] = int(lat_res * 10**7)
                     body['waypoint']['lon'] = int(lon_res * 10**7)
                     body['waypoint']['alt'] = int(alt_res * 10**3)
-                    body['tres'] = float(tres) 
+                    body['tres'] = int(time.time() + float(tres))
                     # Make sure vres is not NaN
                     body['vres'] = float(dist_res * nm / tres) if not np.isclose(tres, 0.0) else 0.0
 
