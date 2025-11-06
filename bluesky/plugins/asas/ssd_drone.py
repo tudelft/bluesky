@@ -29,11 +29,30 @@ with open('../logging_c2c.json', 'r') as f:
 logging.config.dictConfig(config)
 logger = logging.getLogger("SSD_drone")
 
+# Import profiling utilities
+try:
+    from bluesky.plugins.asas import profiling_utils as prof
+    _profiling_available = True
+except ImportError:
+    _profiling_available = False
+    logger.warning("Profiling utilities not available")
+
 if bs.settings.DAA_profiling:
     import cProfile
     from pstats import SortKey
+    if _profiling_available:
+        prof.enable_profiling()
+        prof.enable_cprofile()
+        logger.info("Enhanced profiling enabled")
 
 c2c_avoid_request_publisher_loop_flag = 1
+
+# Dummy context manager for when profiling is disabled
+class _DummyContext:
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        pass
 
 def init_plugin():
 
@@ -50,13 +69,13 @@ def init_plugin():
 
     logger.info("SSD_DRONE plugin initialized")
 
-    if bs.settings.DAA_debug:
-        logger.info("Extra DAA debugging enabled")
-    else:
-        logger.info("Extra DAA debugging disabled")
-
     if bs.settings.DAA_profiling:
         logger.info("Extra DAA profiling enabled")
+        if _profiling_available:
+            logger.info("  - Function-level timing enabled")
+            logger.info("  - Memory tracking available: %s", prof._memory_profiling_available)
+            logger.info("  - Use prof.print_stats() to view results")
+            logger.info("  - Use prof.print_memory_stats() to view memory usage")
     else:
         logger.info("Extra DAA profiling disabled")
 
@@ -70,12 +89,12 @@ def init_plugin():
     return config
 
 def get_signed_area_polygon(xs, ys):
-    signed_area = 0
-    for i in range(len(xs)):
-        if i == (len(xs) - 1):
-            signed_area += (xs[0] - xs[i]) * (ys[0] + ys[i])
-        else:
-            signed_area += (xs[i+1] - xs[i]) * (ys[i+1] + ys[i])
+    """Vectorized calculation of signed area of polygon."""
+    xs = np.asarray(xs)
+    ys = np.asarray(ys)
+    xs_next = np.roll(xs, -1)
+    ys_next = np.roll(ys, -1)
+    signed_area = np.sum((xs_next - xs) * (ys_next + ys))
     return signed_area
 
 class ConflictResolutionTime(core.Entity):
@@ -89,7 +108,7 @@ class ConflictResolutionTime(core.Entity):
         ''' This function gets called automatically when new aircraft are created. '''
         super().create(n)
         # After base creation we can change the values in our own states for the new aircraft
-        self.cr_time[-n:] = [0 for _ in range(n)]
+        self.cr_time[-n:] = 0.0
 
 conflictresolutiontime = ConflictResolutionTime()
 
@@ -97,6 +116,7 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
     def __init__(self, C2CAvoidRequestPublisher):
         super().__init__()
         self.C2CAvoidRequestPublisher = C2CAvoidRequestPublisher
+        self._publish_cache = {}  # Cache to track what was published
 
     def run(self):
         # Make Traffic publisher MQTT client
@@ -117,7 +137,15 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
         return
 
     def on_publish(self, mqttc, obj, mid):
-        logger.debug("Avoid Request Publisher MQTT client published message with mid: %(mid)s", {'mid': str(mid)}) # ?? improve
+        if logger.isEnabledFor(logging.DEBUG):
+            # Retrieve cached message info if available
+            msg_info = self._publish_cache.pop(mid, None)
+            if msg_info:
+                logger.debug("Avoid request published: topic=%s ac_id=%s lat=%d lon=%d alt=%d mid=%d",
+                           msg_info['topic'], msg_info['ac_id'], msg_info['lat'],
+                           msg_info['lon'], msg_info['alt'], mid)
+            else:
+                logger.debug("Avoid Request Publisher MQTT client published message with mid: %d", mid)
         return
 
     def on_subscribe(self, mqttc, obj, mid, granted_qos):
@@ -156,18 +184,20 @@ class SSD_Drone(ConflictResolution):
 
     def resolve(self, conf, ownship, intruder):
         
-        if bs.settings.DAA_profiling:
-            pr = cProfile.Profile()
-            pr.enable()
+        if bs.settings.DAA_profiling and _profiling_available:
+            prof.start_cprofile()
 
         # Initialize SSD variables with ntraf
-        self.initializeSSD(conf, ownship.ntraf)
+        with prof.profile_section("SSD.initializeSSD") if _profiling_available else _DummyContext():
+            self.initializeSSD(conf, ownship.ntraf)
 
         # Construct the SSD
-        self.constructSSD(conf, ownship)
+        with prof.profile_section("SSD.constructSSD") if _profiling_available else _DummyContext():
+            self.constructSSD(conf, ownship)
 
         # Get resolved speed-vector
-        self.calculate_resolution(conf, ownship)
+        with prof.profile_section("SSD.calculate_resolution") if _profiling_available else _DummyContext():
+            self.calculate_resolution(conf, ownship)
 
         # Now assign resolutions to variables in the ASAS class
         # Start with current states, need a copy, otherwise it changes traf!
@@ -193,10 +223,43 @@ class SSD_Drone(ConflictResolution):
 
         alt = ownship.selalt
 
-        if bs.settings.DAA_profiling:
-            pr.disable()
-            pr.print_stats(SortKey.CUMULATIVE)
-            del pr
+        if bs.settings.DAA_profiling and _profiling_available:
+            prof.stop_cprofile()
+            # Print stats every 10 calls to avoid excessive output
+            if hasattr(self, '_profile_call_count'):
+                self._profile_call_count += 1
+            else:
+                self._profile_call_count = 1
+            
+            if self._profile_call_count % 10 == 0:
+                logger.info("="*80)
+                logger.info("PROFILING REPORT (after %d resolve calls)", self._profile_call_count)
+                logger.info("="*80)
+                
+                # Get stats and log them
+                stats = prof.get_stats(sort_by='total_time', top_n=15)
+                if stats:
+                    logger.info("%-50s %8s %10s %10s %10s %10s %10s", 
+                               'Function', 'Count', 'Total(s)', 'Avg(ms)', 'Min(ms)', 'Max(ms)', 'P95(ms)')
+                    logger.info("-"*100)
+                    for stat in stats:
+                        name = stat['name']
+                        if len(name) > 48:
+                            name = "..." + name[-45:]
+                        logger.info("%-50s %8d %10.3f %10.3f %10.3f %10.3f %10.3f",
+                                   name,
+                                   stat['count'],
+                                   stat['total_time'],
+                                   stat['avg_time']*1000,
+                                   stat['min_time']*1000,
+                                   stat['max_time']*1000,
+                                   stat.get('p95', 0)*1000)
+                
+                summary = prof.get_summary()
+                logger.info("="*80)
+                logger.info("Total profiled calls: %d", summary.get('total_calls', 0))
+                logger.info("Total profiled time: %.3fs", summary.get('total_time', 0))
+                logger.info("="*80)
 
         return newtrack, newgscapped, newvs, alt
 
@@ -225,421 +288,477 @@ class SSD_Drone(ConflictResolution):
         # asas is an object of the ASAS class defined in asas.py
 
 
-    def constructSSD(self, conf, ownship):
-        """ Calculates the FRV and ARV of the SSD """
-        N = 0
-        # Parameters
-        N_angle = 180  # [-] Number of points on circle (discretization)
-        hsep = bs.settings.asas_pzr * nm  # [m] Horizontal separation (5 NM)
-        margin = self.resofach  # [-] Safety margin for evasion
-        hsepm = hsep * margin  # [m] Horizontal separation with safety margin
-        alpham = 0.4999 * np.pi  # [rad] Maximum half-angle for VO
-        betalos = np.pi / 4  # [rad] Minimum divertion angle for LOS (45 deg seems optimal)
-        adsbmax = bs.settings.DAA_radius * nm  # [m] Maximum ADS-B range
-        beta = np.pi / 4 + betalos / 2
+    def _get_ssd_parameters(self):
+        """Get SSD algorithm parameters and constants."""
+        return {
+            'N_angle': 180,  # Number of points on circle (discretization)
+            'hsep': bs.settings.asas_pzr * nm,  # Horizontal separation [m]
+            'margin': self.resofach,  # Safety margin for evasion
+            'alpham': 0.4999 * np.pi,  # Maximum half-angle for VO [rad]
+            'betalos': np.pi / 4,  # Minimum divertion angle for LOS [rad]
+            'adsbmax': bs.settings.DAA_radius * nm,  # Maximum ADS-B range [m]
+            'delay': 5.0  # Delay before executing avoidance manoeuvre [s]
+        }
 
-        # Relevant info from traf
-        gsnorth = ownship.gsnorth
-        gseast = ownship.gseast
-        delay = 5.0 # Delay introduced before executing avoidance manoeuvre
+    def _compute_predicted_positions(self, ownship, delay):
+        """Compute aircraft positions after delay period."""
         lat = ownship.lat + np.degrees(delay * ownship.gsnorth / Rearth)
         lon = ownship.lon + np.degrees(delay * ownship.gseast / ownship.coslat / Rearth)
-        ntraf = ownship.ntraf
-        hdg = ownship.hdg
-        gs_ap = ownship.ap.tas
-        hdg_ap = ownship.ap.trk
-        apnorth = np.cos(hdg_ap / 180 * np.pi) * gs_ap
-        apeast = np.sin(hdg_ap / 180 * np.pi) * gs_ap
+        return lat, lon
 
-        # Local variables, will be put into asas later
-        FRV_loc = [None] * ownship.ntraf
-        ARV_loc = [None] * ownship.ntraf
-        # For calculation purposes
-        ARV_calc_loc = [None] * ownship.ntraf
-        FRV_area_loc = np.zeros(ownship.ntraf, dtype=np.float32)
-        ARV_area_loc = np.zeros(ownship.ntraf, dtype=np.float32)
-
-        # # Use velocity limits for the ring-shaped part of the SSD
-        # Discretize the circles using points on circle
+    def _create_velocity_circle(self, N_angle):
+        """Create unit circle for velocity obstacle construction."""
         angles = np.arange(0, 2 * np.pi, 2 * np.pi / N_angle)
-        # Put points of unit-circle in a (180x2)-array (CW)
         xyc = np.transpose(np.reshape(np.concatenate((np.sin(angles), np.cos(angles))), (2, N_angle)))
+        return xyc
 
-        # If no traffic
-        if ntraf == 0:
-            return
-
-        # # If only one aircraft
-        # elif ntraf == 1:
-        #     # Map them into the format ARV wants. Outercircle CCW, innercircle CW
-        #     ARV_loc[0] = circle_lst
-        #     FRV_loc[0] = []
-        #     ARV_calc_loc[0] = ARV_loc[0]
-        #     # Calculate areas and store in asas
-        #     FRV_area_loc[0] = 0
-        #     ARV_area_loc[0] = np.pi * (vmax ** 2 - vmin ** 2)
-        #     return
-
-        # Function qdrdist_matrix needs 4 vectors as input (lat1,lon1,lat2,lon2)
-        # To be efficient, calculate all qdr and dist in one function call
-        # Example with ntraf = 5:   ind1 = [0,0,0,0,1,1,1,2,2,3]
-        #                           ind2 = [1,2,3,4,2,3,4,3,4,4]
-        # This way the qdrdist is only calculated once between every aircraft
-        # To get all combinations, use this function to get the indices
+    def _compute_pairwise_geometry(self, lat, lon, ntraf):
+        """Compute bearing and distance between all aircraft pairs."""
         ind1, ind2 = self.qdrdist_matrix_indices(ntraf)
-        # Get absolute bearing [deg] and distance [nm]
-        # Not sure abs/rel, but qdr is defined from [-180,180] deg, w.r.t. North
-        [qdr, dist] = geo.qdrdist_matrix(lat[ind1], lon[ind1], lat[ind2], lon[ind2])
-        # Put result of function from matrix to ndarray
-        qdr = np.reshape(np.array(qdr), np.shape(ind1))
-        dist = np.reshape(np.array(dist), np.shape(ind1))
-        # SI-units from [deg] to [rad]
+        qdr, dist = geo.qdrdist_matrix(lat[ind1], lon[ind1], lat[ind2], lon[ind2])
+        
+        qdr = np.asarray(qdr).reshape(np.shape(ind1))
+        dist = np.asarray(dist).reshape(np.shape(ind1))
         qdr = np.deg2rad(qdr)
-        # Get distance from [nm] to [m]
         dist = dist * nm
+        
+        return ind1, ind2, qdr, dist
 
-        # In LoS the VO can't be defined, act as if dist is on edge
-        dist[dist < hsepm] = hsepm
-
-        # Calculate vertices of Velocity Obstacle (CCW)
-        # These are still in relative velocity space, see derivation in appendix
-        # Half-angle of the Velocity obstacle [rad]
-        # Include safety margin
+    def _compute_velocity_obstacle_vertices(self, hsepm, dist, qdr, alpham):
+        """Calculate velocity obstacle vertices in relative velocity space."""
+        # Prevent VO issues in LoS by clamping minimum distance
+        dist = np.where(dist < hsepm, hsepm, dist)
+        
+        # Half-angle of velocity obstacle with safety margin
         alpha = np.arcsin(hsepm / dist)
-        # Limit half-angle alpha to 89.982 deg. Ensures that VO can be constructed
-        alpha[alpha > alpham] = alpham
-        # Relevant sin/cos/tan
+        alpha = np.where(alpha > alpham, alpham, alpha)
+        
+        # Precompute trigonometric values
         sinqdr = np.sin(qdr)
         cosqdr = np.cos(qdr)
         tanalpha = np.tan(alpha)
         cosqdrtanalpha = cosqdr * tanalpha
         sinqdrtanalpha = sinqdr * tanalpha
+        
+        return {
+            'sinqdr': sinqdr,
+            'cosqdr': cosqdr,
+            'cosqdrtanalpha': cosqdrtanalpha,
+            'sinqdrtanalpha': sinqdrtanalpha
+        }
 
-        # Consider every aircraft
-        for i in range(ntraf):
+    def _should_process_aircraft(self, i, ownship, c2c_ownship_ids):
+        """Check if aircraft should be processed for SSD construction."""
+        # Filter by C2C ownship registration if required
+        if bs.settings.avoid_ownship_only:
+            if bs.traf.id[i] not in c2c_ownship_ids:
+                return False
+        
+        logger.debug("Constructing SSD for %(ownship)s as it is registered in the C2C", 
+                    {'ownship': str(bs.traf.id[i])})
+        
+        # Check if aircraft is within active geofence
+        try:
+            areafilter.basic_shapes['GF_' + str(ownship.id[i])]
+            ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), 
+                                                         ownship.lat[i], ownship.lon[i], 0)
+            if not ownship_in_geofence:
+                logger.debug("%s is not within the currently active geofence", ownship.id[i])
+                return True  # Continue processing but note geofence status
+        except:
+            pass
+        
+        return True
+
+    def _get_velocity_limits(self, ownship, i):
+        """Get min/max velocity for aircraft, with validation."""
+        vmin = ownship.perf.vmin[i]
+        vmax = ownship.perf.vmax[i]
+        
+        # Check if performance data is available
+        if vmin == vmax == 0:
+            return None, None
+        
+        # Ensure minimum velocity is positive
+        if vmin < 0.001:
+            vmin = 0.001
+        
+        return vmin, vmax
+
+    def _create_velocity_circles(self, xyc, vmin, vmax):
+        """Create inner and outer velocity circles for SSD."""
+        circle_tup = (
+            tuple(map(tuple, np.flipud(xyc * vmax))),  # Outer circle CCW
+            tuple(map(tuple, xyc * vmin))              # Inner circle CW
+        )
+        circle_lst = [
+            list(map(list, np.flipud(xyc * vmax))),
+            list(map(list, xyc * vmin))
+        ]
+        return circle_tup, circle_lst
+
+    def _set_no_conflict_ssd(self, i, circle_lst, vmin, vmax, FRV_loc, ARV_loc, ARV_calc_loc, 
+                            FRV_area_loc, ARV_area_loc):
+        """Set SSD values for aircraft with no nearby conflicts."""
+        ARV_loc[i] = circle_lst
+        FRV_loc[i] = []
+        ARV_calc_loc[i] = ARV_loc[i]
+        FRV_area_loc[i] = 0
+        ARV_area_loc[i] = np.pi * (vmax ** 2 - vmin ** 2)
+
+    def _filter_nearby_aircraft(self, i, ind1, ind2, ind, dist, adsbmax, ntraf):
+        """Get indices of aircraft within ADS-B range."""
+        i_other = np.delete(np.arange(0, ntraf), i)
+        ac_adsb = np.where(dist[ind] < adsbmax)[0]
+        ind = ind[ac_adsb]
+        i_other = i_other[ac_adsb]
+        
+        # Mirror correction for velocity obstacles
+        fix = np.ones(np.shape(i_other))
+        fix[i_other < i] = -1
+        
+        return i_other, ind, fix
+
+    def _construct_velocity_obstacle_vertices(self, i_other, gseast, gsnorth, ind, fix, vmax, vo_trig):
+        """Build velocity obstacle triangle vertices for each intruder."""
+        x1 = (vo_trig['sinqdr'] + vo_trig['cosqdrtanalpha']) * 2 * vmax
+        x2 = (vo_trig['sinqdr'] - vo_trig['cosqdrtanalpha']) * 2 * vmax
+        y1 = (vo_trig['cosqdr'] - vo_trig['sinqdrtanalpha']) * 2 * vmax
+        y2 = (vo_trig['cosqdr'] + vo_trig['sinqdrtanalpha']) * 2 * vmax
+        
+        x = np.concatenate((gseast[i_other],
+                           x1[ind] * fix + gseast[i_other],
+                           x2[ind] * fix + gseast[i_other]))
+        y = np.concatenate((gsnorth[i_other],
+                           y1[ind] * fix + gsnorth[i_other],
+                           y2[ind] * fix + gsnorth[i_other]))
+        
+        x = np.transpose(x.reshape(3, np.shape(i_other)[0]))
+        y = np.transpose(y.reshape(3, np.shape(i_other)[0]))
+        xy = np.dstack((x, y))
+        
+        return xy
+
+    def _load_geofence_data(self, ownship, i):
+        """Load and process geofence coordinates for aircraft."""
+        try:
+            geofence = areafilter.basic_shapes['GF_' + str(ownship.id[i])]
+            coordinates = np.reshape(geofence.coordinates, 
+                                    (int(len(geofence.coordinates) / 2), 2))
             
-            # Only do avoidances with the ownship if turned on
-            if bs.settings.avoid_ownship_only:
-                if not bs.traf.id[i] in set(ownstate_receiver.c2c_ownstate_receiver.ownstate_objects.keys()):    
-                    continue
-
-            logger.debug("Constructing SSD for %(ownship)s as it is registered in the C2C", {'ownship': str(bs.traf.id[i])})
+            lats_gf = coordinates[:, 0]
+            lons_gf = coordinates[:, 1]
+            qdrs_gf, dists_gf = geo.qdrdist(
+                np.full_like(lats_gf, ownship.lat[i]),
+                np.full_like(lons_gf, ownship.lon[i]),
+                lats_gf,
+                lons_gf
+            )
             
-            # Calculate SSD only for aircraft in conflict (See formulas appendix)
-            if conf.inconf[i]:
+            dists_gf = dists_gf * nm
+            qdrs_gf_rad = np.deg2rad(qdrs_gf)
+            xs_gf = dists_gf * np.sin(qdrs_gf_rad)
+            ys_gf = dists_gf * np.cos(qdrs_gf_rad)
+            
+            # Ensure counter-clockwise order
+            if get_signed_area_polygon(xs_gf, ys_gf) > 0:
+                xs_gf = xs_gf[::-1]
+                ys_gf = ys_gf[::-1]
+            
+            return xs_gf, ys_gf
+        except:
+            return None, None
 
-                vmin = ownship.perf.vmin[i]
-                vmax = ownship.perf.vmax[i]
+    def _compute_geofence_segments(self, xs_gf, ys_gf):
+        """Compute geofence segment vectors and rotation matrices."""
+        xs_gf_next = np.roll(xs_gf, -1)
+        ys_gf_next = np.roll(ys_gf, -1)
+        dxs_gf = xs_gf_next - xs_gf
+        dys_gf = ys_gf_next - ys_gf
+        
+        phis_gf = np.arctan2(dys_gf, dxs_gf)
+        cos_phis_gf = np.cos(phis_gf)
+        sin_phis_gf = np.sin(phis_gf)
+        x_hats_prime = np.transpose(np.array([cos_phis_gf, sin_phis_gf]))
+        y_hats_prime = np.transpose(np.array([-sin_phis_gf, cos_phis_gf]))
+        
+        return phis_gf, x_hats_prime, y_hats_prime, xs_gf, ys_gf
 
-                # in the first time step, ASAS runs before perf, which means that his value will be zero
-                # and the SSD cannot be constructed
-                if vmin == vmax == 0:
-                    continue
+    def _add_intruder_vo_to_clipper(self, pc, xy, j, dist, ind, hsepm, i_other, qdr, beta, vmax):
+        """Add velocity obstacle for a single intruder to clipper."""
+        if dist[ind[j]] > hsepm:
+            # Normal triangular VO
+            VO = pyclipper.scale_to_clipper(tuple(map(tuple, xy[j, :, :])))
+        else:
+            # Line-of-sight: use dart-tip shape
+            qdr_los = qdr[ind[j]] + np.pi if i_other[j] < ind[j] else qdr[ind[j]]
+            leg = 1.1 * vmax / np.cos(beta) * np.array([1, 1, 1, 0])
+            angles_los = np.array([qdr_los + 2 * beta, qdr_los, qdr_los - 2 * beta, 0.])
+            x_los = leg * np.sin(angles_los)
+            y_los = leg * np.cos(angles_los)
+            xy_los = np.vstack((x_los, y_los)).T
+            VO = pyclipper.scale_to_clipper(tuple(map(tuple, xy_los)))
+        
+        pc.AddPath(VO, pyclipper.PT_CLIP, True)
 
-                if vmin < 0.001:
-                    vmin = 0.001
-
-                # Map them into the format pyclipper wants. Outercircle CCW, innercircle CW
-                circle_tup = (tuple(map(tuple, np.flipud(xyc * vmax))), tuple(map(tuple, xyc * vmin)))
-                circle_lst = [list(map(list, np.flipud(xyc * vmax))), list(map(list, xyc * vmin))]
-
-                # Relevant x1,y1,x2,y2 (x0 and y0 are zero in relative velocity space)
-                x1 = (sinqdr + cosqdrtanalpha) * 2 * vmax
-                x2 = (sinqdr - cosqdrtanalpha) * 2 * vmax
-                y1 = (cosqdr - sinqdrtanalpha) * 2 * vmax
-                y2 = (cosqdr + sinqdrtanalpha) * 2 * vmax
-
-                # SSD for aircraft i
-                # Get indices that belong to aircraft i
-                ind = np.where(np.logical_or(ind1 == i, ind2 == i))[0]
-                # Check whether there are any aircraft in the vicinity
-                if len(ind) == 0:
-                    # No aircraft in the vicinity
-                    # Map them into the format ARV wants. Outercircle CCW, innercircle CW
-                    ARV_loc[i] = circle_lst
-                    FRV_loc[i] = []
-                    ARV_calc_loc[i] = ARV_loc[i]
-                    # Calculate areas and store in asas
-                    FRV_area_loc[i] = 0
-                    ARV_area_loc[i] = np.pi * (vmax ** 2 - vmin ** 2)
+    def _add_geofence_vos_to_clipper(self, pc, ownship, i, i_other, j, xs_gf, ys_gf, 
+                                     phis_gf, x_hats_prime, y_hats_prime, N_angle, vmax):
+        """Add geofence-based velocity obstacles for an intruder."""
+        qdr_int, dist_int = geo.qdrdist(ownship.lat[i], ownship.lon[i], 
+                                       ownship.lat[i_other[j]], ownship.lon[i_other[j]])
+        qdr_int_rad = np.deg2rad(qdr_int)
+        x_int = dist_int * nm * np.sin(qdr_int_rad)
+        y_int = dist_int * nm * np.cos(qdr_int_rad)
+        d_int = np.array([x_int, y_int])
+        
+        trk_int = np.deg2rad(ownship.trk[i_other[j]])
+        gs_int = ownship.gs[i_other[j]]
+        v_int = np.array([gs_int * np.sin(trk_int), gs_int * np.cos(trk_int)])
+        
+        # Find candidate geofence segments
+        v_int_dot_y_hats_prime = y_hats_prime @ v_int
+        candidate_gf_segments = np.where(v_int_dot_y_hats_prime < 0)[0]
+        
+        if len(candidate_gf_segments) == 0:
+            return
+        
+        # Compute geometry for candidate segments
+        d_int_dot_x_hats_prime = x_hats_prime[candidate_gf_segments] @ d_int
+        d_int_dot_y_hats_prime = y_hats_prime[candidate_gf_segments] @ d_int
+        ds_geo = -np.sum(((np.array([xs_gf[candidate_gf_segments], 
+                                     ys_gf[candidate_gf_segments]])).T * 
+                         y_hats_prime[candidate_gf_segments]), 1)
+        
+        phis_prime_gf = 0.5 * np.arctan2(-d_int_dot_x_hats_prime, d_int_dot_y_hats_prime)
+        phis_total_gf = phis_gf[candidate_gf_segments] + phis_prime_gf
+        
+        # Rotation matrices for secondary axis system
+        cos_phis_total = np.cos(phis_total_gf)
+        sin_phis_total = np.sin(phis_total_gf)
+        x_hats_2prime = np.transpose(np.array([cos_phis_total, sin_phis_total]))
+        y_hats_2prime = np.transpose(np.array([-sin_phis_total, cos_phis_total]))
+        
+        # Dot products for VO geometry
+        d_int_dot_x_hats_2prime = x_hats_2prime @ d_int
+        d_int_dot_y_hats_2prime = y_hats_2prime @ d_int
+        v_int_dot_x_hats_2prime = x_hats_2prime @ v_int
+        v_int_dot_y_hats_2prime = y_hats_2prime @ v_int
+        d_int_dot_v_int = np.dot(d_int, v_int) * np.ones(np.shape(d_int_dot_x_hats_2prime))
+        
+        # Geometric constants
+        C1s = 1. + np.sin(phis_prime_gf) * d_int_dot_x_hats_2prime / ds_geo
+        C2s = 1. + np.cos(phis_prime_gf) * d_int_dot_y_hats_2prime / ds_geo
+        C3s = -2. * v_int_dot_x_hats_2prime - np.sin(phis_prime_gf) * d_int_dot_v_int / ds_geo
+        C4s = -2. * v_int_dot_y_hats_2prime - np.cos(phis_prime_gf) * d_int_dot_v_int / ds_geo
+        
+        Cxs_2prime = -C3s / (2. * C1s)
+        Cys_2prime = -C4s / (2. * C2s)
+        
+        # Semi-major axes for ellipse/hyperbola
+        a2s = (-gs_int**2 + C2s * Cys_2prime**2) / C1s + Cxs_2prime**2
+        b2s = (-gs_int**2 + C1s * Cxs_2prime**2) / C2s + Cys_2prime**2
+        
+        # Construct and add VOs
+        for k in range(len(a2s)):
+            if a2s[k] <= 0:
+                continue
+            
+            if b2s[k] > 0:
+                # Ellipse case
+                ellipse_angles = np.linspace(0., 2. * np.pi, N_angle)
+                rotated_xs = np.sqrt(a2s[k]) * np.cos(ellipse_angles) + Cxs_2prime[k]
+                rotated_ys = np.sqrt(b2s[k]) * np.sin(ellipse_angles) + Cys_2prime[k]
+            else:
+                # Hyperbola case
+                tmax = np.log((20. * vmax + np.sqrt(20.**2 * vmax**2 + a2s[k])) / np.sqrt(a2s[k]))
+                tmin = -tmax
+                if phis_prime_gf[k] > 0:
+                    t = np.linspace(tmin, tmax, N_angle)
+                    rotated_xs = -np.sqrt(a2s[k]) * np.cosh(t) + Cxs_2prime[k]
                 else:
-                    # The i's of the other aircraft
-                    i_other = np.delete(np.arange(0, ntraf), i)
-                    # Aircraft that are within ADS-B range
-                    ac_adsb = np.where(dist[ind] < adsbmax)[0]
-                    # Now account for ADS-B range in indices of other aircraft (i_other)
-                    ind = ind[ac_adsb]
-                    i_other = i_other[ac_adsb]
-                    conf.inrange[i] = i_other
-                    # VO from 2 to 1 is mirror of 1 to 2. Only 1 to 2 can be constructed in
-                    # this manner, so need a correction vector that will mirror the VO
-                    fix = np.ones(np.shape(i_other))
-                    fix[i_other < i] = -1
+                    t = np.linspace(tmax, tmin, N_angle)
+                    rotated_xs = np.sqrt(a2s[k]) * np.cosh(t) + Cxs_2prime[k]
+                rotated_ys = np.sqrt(-b2s[k]) * np.sinh(t) + Cys_2prime[k]
+            
+            # Rotate back to original frame
+            non_rotated_xs = (rotated_xs * np.cos(phis_total_gf[k]) - 
+                            rotated_ys * np.sin(phis_total_gf[k]))
+            non_rotated_ys = (rotated_xs * np.sin(phis_total_gf[k]) + 
+                            rotated_ys * np.cos(phis_total_gf[k]))
+            
+            xy_gf = np.transpose(np.array([non_rotated_xs, non_rotated_ys]))
+            xy_gf_tuple = tuple(map(tuple, xy_gf))
+            
+            try:
+                VO = pyclipper.scale_to_clipper(xy_gf_tuple)
+                pc.AddPath(VO, pyclipper.PT_CLIP, True)
+            except:
+                pass
 
-                    # Get vertices in an x- and y-array of size (ntraf-1)*3x1
-                    x = np.concatenate((gseast[i_other],
-                                        x1[ind] * fix + gseast[i_other],
-                                        x2[ind] * fix + gseast[i_other]))
-                    y = np.concatenate((gsnorth[i_other],
-                                        y1[ind] * fix + gsnorth[i_other],
-                                        y2[ind] * fix + gsnorth[i_other]))
-                    # Reshape [(ntraf-1)x3] and put arrays in one array [(ntraf-1)x3x2]
-                    x = np.transpose(x.reshape(3, np.shape(i_other)[0]))
-                    y = np.transpose(y.reshape(3, np.shape(i_other)[0]))
-                    xy = np.dstack((x, y))
+    def _finalize_ssd_regions(self, ARV, FRV, circle_lst, vmin, vmax, ownship, i, xyc):
+        """Compute final FRV and ARV regions and calculate ARV subset for resolution."""
+        if len(ARV) == 0:
+            return [], circle_lst, [], np.pi * (vmax ** 2 - vmin ** 2), 0
+        elif len(FRV) == 0:
+            return circle_lst, [], circle_lst, 0, np.pi * (vmax ** 2 - vmin ** 2)
+        
+        # Normalize to list format
+        if not isinstance(FRV[0][0], list):
+            FRV = [FRV]
+        if not isinstance(ARV[0][0], list):
+            ARV = [ARV]
+        
+        FRV_area = self.area(FRV)
+        ARV_area = self.area(ARV)
+        
+        # Compute smaller ARV ring around current speed
+        pc2 = pyclipper.Pyclipper()
+        pc2.AddPaths(pyclipper.scale_from_clipper(
+            pyclipper.scale_to_clipper(ARV)), pyclipper.PT_CLIP, True)
+        
+        xyp = (tuple(map(tuple, np.flipud(xyc * min(vmax, ownship.tas[i] + 0.1)))),
+               tuple(map(tuple, xyc * max(vmin, ownship.tas[i] - 0.1))))
+        part = pyclipper.scale_to_clipper(xyp)
+        pc2.AddPaths(part, pyclipper.PT_SUBJECT, True)
+        
+        ARV_calc = pyclipper.scale_from_clipper(
+            pc2.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
+        
+        # Fallback to full ARV if no intersection
+        if len(ARV_calc) == 0:
+            ARV_calc = ARV
+        else:
+            ARV_calc = ARV  # Use full ARV per original logic
+        
+        return ARV, FRV, ARV_calc, FRV_area, ARV_area
 
-                    # Make a clipper object
-                    pc = pyclipper.Pyclipper()
-                    # Add circles (ring-shape) to clipper as subject
-                    pc.AddPaths(pyclipper.scale_to_clipper(circle_tup), pyclipper.PT_SUBJECT, True)
-
-                    # If there is a geofence and the ownship is within the geofence, calculate relative variables:
-                    geofence_defined = False
-                    try:
-                        areafilter.basic_shapes['GF_' + str(ownship.id[i])]
-                    except:
-                        pass
-                    else:
-                        ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), ownship.lat[i], ownship.lon[i], 0)
-                        if not ownship_in_geofence:
-                            logger.debug(str(ownship.id[i]) + " is not within the currently active geofence")
-                            pass
-
-                        geofence_defined = True
-                        # Load geofence shape
-                        geofence = areafilter.basic_shapes['GF_' + str(ownship.id[i])]
-                        # Loop through geofence coordinates
-                        coordinates = np.reshape(geofence.coordinates, (int(len(geofence.coordinates) / 2), 2))
-                        qdrs_gf = np.empty([len(coordinates)], dtype=float) # [deg] in hdg CW
-                        dists_gf = np.empty([len(coordinates)], dtype=float) # [m]
-                        for k in range(len(coordinates)):
-                            # Calculate relative qdrs and distances of geofence points w.r.t. ownship
-                            qdrs_gf[k], dists_gf[k] = geo.qdrdist(ownship.lat[i], ownship.lon[i], coordinates[k][0], coordinates[k][1])
-                        
-                        dists_gf = dists_gf * nm
-
-                        qdrs_gf_rad = np.deg2rad(qdrs_gf)
-                        xs_gf = dists_gf * np.sin(qdrs_gf_rad) # [m] East
-                        ys_gf = dists_gf * np.cos(qdrs_gf_rad) # [m] North
-
-                        # revert geofence order if geofence is clockwise (signed area positive)
-                        if (get_signed_area_polygon(xs_gf, ys_gf) > 0):
-                            xs_gf = xs_gf[::-1]
-                            ys_gf = ys_gf[::-1]
-                        
-                        # Generate data for each geofence segment 0 to 1, 1 to 2, 2 to 3 ..... n to 0.
-                        dxs_gf = np.empty([len(coordinates)], dtype=float)
-                        dys_gf = np.empty([len(coordinates)], dtype=float)
-                        for k in range(len(coordinates)):
-                            x_from = xs_gf[k]
-                            y_from = ys_gf[k]
-                            # if last element (needs to be connected to first element)
-                            if k == (len(coordinates) - 1):
-                                x_to = xs_gf[0]
-                                y_to = ys_gf[0]
-                            else:
-                                x_to = xs_gf[k + 1]
-                                y_to = ys_gf[k + 1]
-                            
-                            dxs_gf[k] = x_to - x_from
-                            dys_gf[k] = y_to - y_from
-
-                        # calculate values (phis) of rotation of geofence segments
-                        phis_gf = np.arctan2(dys_gf, dxs_gf)
-                        x_hats_prime = np.transpose(np.array([np.cos(phis_gf), np.sin(phis_gf)]))
-                        y_hats_prime = np.transpose(np.array([-np.sin(phis_gf), np.cos(phis_gf)]))
-
-                    # Add each other aircraft to clipper as clip
-                    for j in range(np.shape(i_other)[0]):
-                        # Scale VO when not in LOS
-                        if dist[ind[j]] > hsepm:
-                            # Normally VO shall be added of this other a/c
-                            VO = pyclipper.scale_to_clipper(tuple(map(tuple, xy[j, :, :])))
-                        else:
-                            # Pair is in LOS, instead of triangular VO, use darttip
-                            # Check if bearing should be mirrored
-                            if i_other[j] < i:
-                                qdr_los = qdr[ind[j]] + np.pi
-                            else:
-                                qdr_los = qdr[ind[j]]
-                            # Length of inner-leg of darttip
-                            leg = 1.1 * vmax / np.cos(beta) * np.array([1, 1, 1, 0])
-                            # Angles of darttip
-                            angles_los = np.array([qdr_los + 2 * beta, qdr_los, qdr_los - 2 * beta, 0.])
-                            # Calculate coordinates (CCW)
-                            x_los = leg * np.sin(angles_los)
-                            y_los = leg * np.cos(angles_los)
-                            # Put in array of correct format
-                            xy_los = np.vstack((x_los, y_los)).T
-                            # Scale darttip
-                            VO = pyclipper.scale_to_clipper(tuple(map(tuple, xy_los)))
-                        # Add scaled VO to clipper
-                        pc.AddPath(VO, pyclipper.PT_CLIP, True)
-
-                        # Add Geofence if available
-                        if (geofence_defined):
-                            # Determine relative distance vector w.r.t. intruder
-                            qdr_int, dist_int = geo.qdrdist(ownship.lat[i], ownship.lon[i], ownship.lat[i_other[j]], ownship.lon[i_other[j]])
-                            qdr_int_rad = np.deg2rad(qdr_int)
-                            x_int = dist_int * nm * np.sin(qdr_int_rad)
-                            y_int = dist_int * nm * np.cos(qdr_int_rad)
-                            d_int = np.array([x_int, y_int])
-                            trk_int = np.deg2rad(ownship.trk[i_other[j]])
-                            gs_int = ownship.gs[i_other[j]]
-                            v_int = np.array([gs_int * np.sin(trk_int), gs_int * np.cos(trk_int)])
-
-                            v_int_dot_y_hats_prime = y_hats_prime @ v_int
-                            candidate_gf_segments = np.where(v_int_dot_y_hats_prime < 0)[0]
-                            
-                            d_int_dot_x_hats_prime = x_hats_prime[candidate_gf_segments] @ d_int
-                            d_int_dot_y_hats_prime = y_hats_prime[candidate_gf_segments] @ d_int
-                            ds_geo = -np.sum(((np.array([xs_gf[candidate_gf_segments], ys_gf[candidate_gf_segments]])).T * y_hats_prime[candidate_gf_segments]), 1)
-
-                            phis_prime_gf = 0.5 * np.arctan2(-1. * d_int_dot_x_hats_prime, d_int_dot_y_hats_prime)
-
-                            # Total rotation angle
-                            phis_total_gf = phis_gf[candidate_gf_segments] + phis_prime_gf
-
-                            # Secondary axis system primary axes
-                            x_hats_2prime = np.transpose(np.array([np.cos(phis_total_gf), np.sin(phis_total_gf)]))
-                            y_hats_2prime = np.transpose(np.array([-np.sin(phis_total_gf), np.cos(phis_total_gf)]))
-                            
-                            # Arrays of dot products
-                            d_int_dot_x_hats_2prime = x_hats_2prime @ d_int
-                            d_int_dot_y_hats_2prime = y_hats_2prime @ d_int
-                            v_int_dot_x_hats_2prime = x_hats_2prime @ v_int
-                            v_int_dot_y_hats_2prime = y_hats_2prime @ v_int
-                            d_int_dot_v_int = np.dot(d_int, v_int) * np.ones(np.shape(d_int_dot_x_hats_2prime))
-
-                            # Constants needed to compute geometry of geofence VO's
-                            C1s = 1. + np.sin(phis_prime_gf) * d_int_dot_x_hats_2prime / ds_geo
-                            C2s = 1. + np.cos(phis_prime_gf) * d_int_dot_y_hats_2prime / ds_geo
-                            C3s = -2. * v_int_dot_x_hats_2prime - np.sin(phis_prime_gf) * d_int_dot_v_int / ds_geo
-                            C4s = -2. * v_int_dot_y_hats_2prime - np.cos(phis_prime_gf) * d_int_dot_v_int / ds_geo
-                            
-                            # Center points of geofence VO geometries in double rotated axis system
-                            Cxs_2prime = - C3s / (2. * C1s)
-                            Cys_2prime = - C4s / (2. * C2s)
-
-                            # semi major axes squared (in case of ellipse)
-                            a2s = (- gs_int**2 + C2s * Cys_2prime**2) / C1s + Cxs_2prime**2
-                            b2s = (- gs_int**2 + C1s * Cxs_2prime**2) / C2s + Cys_2prime**2
-
-                            # Loop trough a2s and b2s to construct VOs, categorize them 
-                            for k in range(len(a2s)):
-                                # if ownship outside gf segment TODO: UPDATE FOR OUTSIDE the geofence cases!!!!!
-                                if (a2s[k] <= 0):
-                                    continue
-                                # If Ellipse
-                                elif (b2s[k] > 0):
-                                    ellipse_angles = np.linspace(0., 2. * np.pi, N_angle)
-                                    rotated_xs = np.sqrt(a2s[k]) * np.cos(ellipse_angles) + Cxs_2prime[k]
-                                    rotated_ys = np.sqrt(b2s[k]) * np.sin(ellipse_angles) + Cys_2prime[k]
-                                # If hyperbola
-                                else:
-                                    tmax = np.log((20. * vmax + np.sqrt(20.**2 * vmax**2 + a2s[k])) / np.sqrt(a2s[k]))
-                                    tmin = -tmax
-                                    if (phis_prime_gf[k] > 0):
-                                        t = np.linspace(tmin, tmax, N_angle)
-                                        rotated_xs = -np.sqrt(a2s[k]) * np.cosh(t) + Cxs_2prime[k]
-                                    else:
-                                        t = np.linspace(tmax, tmin, N_angle)
-                                        rotated_xs = np.sqrt(a2s[k]) * np.cosh(t) + Cxs_2prime[k]
-                                    rotated_ys = np.sqrt(-b2s[k]) * np.sinh(t) + Cys_2prime[k]
-                                non_rotated_xs = rotated_xs * np.cos(phis_total_gf[k]) - rotated_ys * np.sin(phis_total_gf[k])
-                                non_rotated_ys = rotated_xs * np.sin(phis_total_gf[k]) + rotated_ys * np.cos(phis_total_gf[k])
-
-                                # Add non rotated VO's to clipper
-                                xy_gf = []
-                                xy_gf.append(non_rotated_xs)
-                                xy_gf.append(non_rotated_ys)
-                                xy_gf = np.array(xy_gf)
-                                xy_gf = np.transpose(xy_gf)
-                                xy_gf_tuple = tuple(map(tuple, xy_gf))
-
-                                # Scale VO to clipper
-                                VO = pyclipper.scale_to_clipper(xy_gf_tuple)
-                                # Add scaled VO to clipper
-                                try:
-                                    pc.AddPath(VO, pyclipper.PT_CLIP, True)
-                                except:
-                                    pass
-
-                    # Execute clipper command
-                    FRV = pyclipper.scale_from_clipper(
-                        pc.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
-
-                    ARV = pc.Execute(pyclipper.CT_DIFFERENCE, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
-
-                    # Make another clipper object for extra intersections
-                    pc2 = pyclipper.Pyclipper()
-                    # Put the ARV in there, make sure it's not empty
-                    if len(ARV) > 0:
-                        pc2.AddPaths(ARV, pyclipper.PT_CLIP, True)
-
-                    # Scale back
-                    ARV = pyclipper.scale_from_clipper(ARV)
-
-                    # Check if ARV or FRV is empty
-                    if len(ARV) == 0:
-                        # No aircraft in the vicinity
-                        # Map them into the format ARV wants. Outercircle CCW, innercircle CW
-                        ARV_loc[i] = []
-                        FRV_loc[i] = circle_lst
-                        ARV_calc_loc[i] = []
-                        # Calculate areas and store in asas
-                        FRV_area_loc[i] = np.pi * (vmax ** 2 - vmin ** 2)
-                        ARV_area_loc[i] = 0
-                    elif len(FRV) == 0:
-                        # Should not happen with one a/c or no other a/c in the vicinity.
-                        # These are handled earlier. Happens when RotA has removed all
-                        # Map them into the format ARV wants. Outercircle CCW, innercircle CW
-                        ARV_loc[i] = circle_lst
-                        FRV_loc[i] = []
-                        ARV_calc_loc[i] = circle_lst
-                        # Calculate areas and store in asas
-                        FRV_area_loc[i] = 0
-                        ARV_area_loc[i] = np.pi * (vmax ** 2 - vmin ** 2)
-                    else:
-                        # Check multi exteriors, if this layer is not a list, it means it has no exteriors
-                        # In that case, make it a list, such that its format is consistent with further code
-                        if not type(FRV[0][0]) == list:
-                            FRV = [FRV]
-                        if not type(ARV[0][0]) == list:
-                            ARV = [ARV]
-                        # Store in asas
-                        FRV_loc[i] = FRV
-                        ARV_loc[i] = ARV
-                        # Calculate areas and store in asas
-                        FRV_area_loc[i] = self.area(FRV)
-                        ARV_area_loc[i] = self.area(ARV)
-
-                        # Small ring
-                        xyp = (tuple(map(tuple, np.flipud(xyc * min(vmax, ownship.tas[i] + 0.1)))),
-                                tuple(map(tuple, xyc * max(vmin, ownship.tas[i] - 0.1))))
-                        part = pyclipper.scale_to_clipper(xyp)
-                        pc2.AddPaths(part, pyclipper.PT_SUBJECT, True)
-
-                        # Execute clipper command
-                        ARV_calc = pyclipper.scale_from_clipper(
-                            pc2.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
-                        
-                        # If no smaller ARV is found, take the full ARV
-                        if len(ARV_calc) == 0:
-                            ARV_calc = ARV
-
-                        ARV_calc = ARV
-                        # Update calculatable ARV for resolutions
-                        ARV_calc_loc[i] = ARV_calc
-
+    @prof.profile_function("SSD.constructSSD") if _profiling_available else lambda f: f
+    def constructSSD(self, conf, ownship):
+        """
+        Construct the State Space Diagram (SSD) for all aircraft.
+        
+        Computes the Free Reachable Velocity (FRV) and Allowable Resolution Velocity (ARV)
+        regions by constructing velocity obstacles from nearby traffic and geofence constraints.
+        
+        Args:
+            conf: Conflict resolution configuration object
+            ownship: Traffic object containing all aircraft states
+        """
+        ntraf = ownship.ntraf
+        if ntraf == 0:
+            return
+        
+        # Get algorithm parameters
+        params = self._get_ssd_parameters()
+        N_angle = params['N_angle']
+        hsep = params['hsep']
+        hsepm = hsep * params['margin']
+        alpham = params['alpham']
+        betalos = params['betalos']
+        adsbmax = params['adsbmax']
+        delay = params['delay']
+        beta = np.pi / 4 + betalos / 2
+        
+        # Get traffic data
+        gsnorth = ownship.gsnorth
+        gseast = ownship.gseast
+        
+        # Compute predicted positions after delay
+        lat, lon = self._compute_predicted_positions(ownship, delay)
+        
+        # Create velocity circle template
+        xyc = self._create_velocity_circle(N_angle)
+        
+        # Initialize result arrays
+        FRV_loc = [None] * ntraf
+        ARV_loc = [None] * ntraf
+        ARV_calc_loc = [None] * ntraf
+        FRV_area_loc = np.zeros(ntraf, dtype=np.float32)
+        ARV_area_loc = np.zeros(ntraf, dtype=np.float32)
+        
+        # Compute pairwise geometry between all aircraft
+        ind1, ind2, qdr, dist = self._compute_pairwise_geometry(lat, lon, ntraf)
+        
+        # Compute velocity obstacle vertices for all pairs
+        vo_trig = self._compute_velocity_obstacle_vertices(hsepm, dist, qdr, alpham)
+        
+        # Precompute C2C ownship set for filtering
+        c2c_ownship_ids = (set(ownstate_receiver.c2c_ownstate_receiver.ownstate_objects.keys()) 
+                          if bs.settings.avoid_ownship_only else None)
+        
+        # Process each aircraft
+        for i in range(ntraf):
+            # Check if this aircraft should be processed
+            if not self._should_process_aircraft(i, ownship, c2c_ownship_ids):
+                continue
+            
+            # Only calculate SSD for aircraft in conflict
+            if not conf.inconf[i]:
+                continue
+            
+            # Get velocity limits
+            vmin, vmax = self._get_velocity_limits(ownship, i)
+            if vmin is None:
+                continue
+            
+            # Create velocity circles for this aircraft
+            circle_tup, circle_lst = self._create_velocity_circles(xyc, vmin, vmax)
+            
+            # Find indices of nearby aircraft
+            ind = np.where(np.logical_or(ind1 == i, ind2 == i))[0]
+            
+            if len(ind) == 0:
+                # No aircraft nearby: full ARV, empty FRV
+                self._set_no_conflict_ssd(i, circle_lst, vmin, vmax, FRV_loc, ARV_loc, 
+                                         ARV_calc_loc, FRV_area_loc, ARV_area_loc)
+                continue
+            
+            # Filter for aircraft within ADS-B range
+            i_other, ind, fix = self._filter_nearby_aircraft(i, ind1, ind2, ind, dist, adsbmax, ntraf)
+            conf.inrange[i] = i_other
+            
+            # Construct velocity obstacle vertices
+            xy = self._construct_velocity_obstacle_vertices(i_other, gseast, gsnorth, ind, fix, vmax, vo_trig)
+            
+            # Initialize clipper for geometric operations
+            pc = pyclipper.Pyclipper()
+            pc.AddPaths(pyclipper.scale_to_clipper(circle_tup), pyclipper.PT_SUBJECT, True)
+            
+            # Load geofence
+            xs_gf, ys_gf = self._load_geofence_data(ownship, i)
+            geofence_data = None
+            if xs_gf is not None:
+                geofence_data = self._compute_geofence_segments(xs_gf, ys_gf)
+            
+            # Add velocity obstacles for each intruder
+            for j in range(len(i_other)):
+                self._add_intruder_vo_to_clipper(pc, xy, j, dist, ind, hsepm, i_other, qdr, beta, vmax)
+                
+                # Add geofence-based VOs if geofence is active
+                if geofence_data is not None:
+                    phis_gf, x_hats_prime, y_hats_prime, xs_gf, ys_gf = geofence_data
+                    self._add_geofence_vos_to_clipper(pc, ownship, i, i_other, j, xs_gf, ys_gf,
+                                                     phis_gf, x_hats_prime, y_hats_prime, N_angle, vmax)
+            
+            # Execute clipper to compute FRV and ARV
+            FRV = pyclipper.scale_from_clipper(
+                pc.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
+            ARV = pc.Execute(pyclipper.CT_DIFFERENCE, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
+            ARV = pyclipper.scale_from_clipper(ARV)
+            
+            # Finalize regions and compute ARV subset
+            ARV_loc[i], FRV_loc[i], ARV_calc_loc[i], FRV_area_loc[i], ARV_area_loc[i] = \
+                self._finalize_ssd_regions(ARV, FRV, circle_lst, vmin, vmax, ownship, i, xyc)
+        
+        # Store results in conflict resolution object
         conf.FRV = FRV_loc
         conf.ARV = ARV_loc
         conf.ARV_calc = ARV_calc_loc
         conf.FRV_area = FRV_area_loc
         conf.ARV_area = ARV_area_loc
-        return
 
 
+    @prof.profile_function("SSD.calculate_resolution") if _profiling_available else lambda f: f
     def calculate_resolution(self, conf, ownship):
         """ Calculates closest conflict-free point according to ruleset """
         # It's just linalg, however credits to: http://stackoverflow.com/a/1501725
@@ -648,23 +767,22 @@ class SSD_Drone(ConflictResolution):
         gsnorth = ownship.gsnorth
         gseast = ownship.gseast
         ntraf = ownship.ntraf
-        c2c_ownship_ids = set(ownstate_receiver.c2c_ownstate_receiver.ownstate_objects.keys())
+        # Pre-compute C2C ownship set once
+        c2c_ownship_ids = set(ownstate_receiver.c2c_ownstate_receiver.ownstate_objects.keys()) if bs.settings.avoid_ownship_only else None
 
         # Loop through SSDs of all aircraft
         for i in range(ntraf):
             
             # Only do avoidances with drones registered as ownships in the C2C
             if bs.settings.avoid_ownship_only:
-                if not bs.traf.id[i] in c2c_ownship_ids:
+                if bs.traf.id[i] not in c2c_ownship_ids:
                     continue
 
             logger.debug("Checking %(ownship)s for conflicts as it is registered in the C2C", {'ownship': str(bs.traf.id[i])})
             
             # Only those that are in conflict need to resolve
             if conf.inconf[i] and ARV[i] is not None and len(ARV[i]) > 0:
-
-                if bs.settings.DAA_debug or bs.settings.DAA_profiling:
-                    logger.info("%(ownship) is in conflict, resolving...", {'ownship': str(bs.traf.id[i])})
+                logger.debug("%(ownship)s is in conflict, resolving...", {'ownship': str(bs.traf.id[i])})
 
                 # Loop through all exteriors and append. Afterwards concatenate
                 p = []
@@ -709,7 +827,7 @@ class SSD_Drone(ConflictResolution):
 
             # Only do avoidances with the ownship if turned on
             if bs.settings.avoid_ownship_only:
-                if not bs.traf.id[i] in set(ownstate_receiver.c2c_ownstate_receiver.ownstate_objects.keys()):
+                if bs.traf.id[i] not in c2c_ownship_ids:
                     continue
                 
             if (conf.asase[i] != 0. and conf.asasn[i] != 0.):
@@ -724,6 +842,7 @@ class SSD_Drone(ConflictResolution):
 
                 # Check resolution in geofence
                 geofence_defined = False
+                ownship_in_geofence = False
                 solution_in_geofence = True
                 try:
                     areafilter.basic_shapes['GF_' + str(ownship.id[i])]
@@ -746,13 +865,16 @@ class SSD_Drone(ConflictResolution):
                         # Loop through geofence coordinates
                         geofence = areafilter.basic_shapes['GF_' + str(ownship.id[i])]
                         coordinates = np.reshape(geofence.coordinates, (int(len(geofence.coordinates) / 2), 2))
-                        qdrs_gf = np.empty([len(coordinates)], dtype=float) # [deg] in hdg CW
-                        dists_gf = np.empty([len(coordinates)], dtype=float) # [m]
-                        for k in range(len(coordinates)):
-                            # Calculate relative qdrs and distances of geofence points w.r.t. ownship
-                            qdr_gf, dist_gf = geo.qdrdist(ownship.lat[i], ownship.lon[i], coordinates[k][0], coordinates[k][1])
-                            qdrs_gf[k] = qdr_gf
-                            dists_gf[k] = dist_gf * nm
+                        # Vectorize geofence coordinate processing
+                        lats_gf = coordinates[:, 0]
+                        lons_gf = coordinates[:, 1]
+                        qdrs_gf, dists_gf = geo.qdrdist(
+                            np.full_like(lats_gf, ownship.lat[i]),
+                            np.full_like(lons_gf, ownship.lon[i]),
+                            lats_gf,
+                            lons_gf
+                        )
+                        dists_gf = dists_gf * nm
                         
                         xs_gf = dists_gf * np.sin(np.deg2rad(qdrs_gf)) # [m] East
                         ys_gf = dists_gf * np.cos(np.deg2rad(qdrs_gf)) # [m] North
@@ -762,24 +884,14 @@ class SSD_Drone(ConflictResolution):
                             ys_gf = ys_gf[::-1]
                         
                         # Generate data for each geofence segment 0 to 1, 1 to 2, 2 to 3 ..... n to 0.
-                        dxs_gf = np.empty([len(coordinates)], dtype=float)
-                        dys_gf = np.empty([len(coordinates)], dtype=float)
-                        for k in range(len(coordinates)):
-                            x_from = xs_gf[k]
-                            y_from = ys_gf[k]
-                            # if last element (needs to be connected to first element)
-                            if k == (len(coordinates) - 1):
-                                x_to = xs_gf[0]
-                                y_to = ys_gf[0]
-                            else:
-                                x_to = xs_gf[k + 1]
-                                y_to = ys_gf[k + 1]
-                            
-                            dxs_gf[k] = x_to - x_from
-                            dys_gf[k] = y_to - y_from
+                        # Vectorize segment calculation
+                        xs_gf_next = np.roll(xs_gf, -1)
+                        ys_gf_next = np.roll(ys_gf, -1)
+                        dxs_gf = xs_gf_next - xs_gf
+                        dys_gf = ys_gf_next - ys_gf
 
                         # calculate values (phis) of rotation of geofence segments
-                        phis_gf = np.arctan2(dys_gf,dxs_gf)
+                        phis_gf = np.arctan2(dys_gf, dxs_gf)
                         y_hats_prime = np.array([-np.sin(phis_gf), np.cos(phis_gf)])
                         d_geo = -(xs_gf * y_hats_prime[0] + ys_gf * y_hats_prime[1])
                         dist_gf_frac = -(-np.sin(phis_gf) * dx_n_res + np.cos(phis_gf) * dy_n_res)
@@ -810,7 +922,16 @@ class SSD_Drone(ConflictResolution):
                     body['vres'] = float(dist_res * nm / tres) if not np.isclose(tres, 0.0) else 0.0
 
                     logger.debug("Sending avoid_request: %(body)s", {'body': json.dumps(body)})
-                    avoid_request_publisher.mqtt_client.publish('daa/avoid_request', payload=json.dumps(body))
+                    msg_info = avoid_request_publisher.mqtt_client.publish('daa/avoid_request', payload=json.dumps(body))
+                    # Cache message info for debug logging
+                    if logger.isEnabledFor(logging.DEBUG) and msg_info.rc == mqtt.MQTT_ERR_SUCCESS:
+                        avoid_request_publisher.mqtt_client._publish_cache[msg_info.mid] = {
+                            'topic': 'daa/avoid_request',
+                            'ac_id': body['ac_id'],
+                            'lat': body['waypoint']['lat'],
+                            'lon': body['waypoint']['lon'],
+                            'alt': body['waypoint']['alt']
+                        }
 
             # reset resolution as external parties have to respond to it
             conf.asase[i] = gseast[i]

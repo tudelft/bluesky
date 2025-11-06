@@ -58,29 +58,34 @@ class C2CGeofenceReceiver(Entity):
         self.mqtt_client.run()
         
     def recv_mqtt(self, msg):
-        self.lock.acquire()
+        """Receive MQTT message; parse outside the lock to minimize contention."""
+        if msg.topic != 'daa/geofence':
+            return
         try:
-            if msg.topic == 'daa/geofence': 
-                self.mqtt_msg_buf.append(json.loads(msg.payload))
-        finally:
-            self.lock.release()
+            payload = json.loads(msg.payload)
+        except Exception as e:
+            logger.warning("Failed to parse geofence payload: %(err)s", {'err': str(e)})
+            return
+        with self.lock:
+            self.mqtt_msg_buf.append(payload)
 
     def copy_buffers(self):
-        self.lock.acquire()
-        try:
-            self.mqtt_msgs.extend(self.mqtt_msg_buf)
-
-            # Empty buffers
-            self.mqtt_msg_buf = []
-        finally:
-            self.lock.release()
+        with self.lock:
+            if not self.mqtt_msg_buf:
+                return
+            if self.mqtt_msgs:
+                self.mqtt_msgs.extend(self.mqtt_msg_buf)
+                self.mqtt_msg_buf = []
+            else:
+                self.mqtt_msgs, self.mqtt_msg_buf = self.mqtt_msg_buf, []
 
     def update_geofence_object(self, msg):
         # Check if geofence already assigned before
-        if str(msg['ac_id']) in self.geofence_objects.keys():
-            self.geofence_objects[str(msg['ac_id'])].update(msg)
+        ac_id_str = str(msg.get('ac_id'))
+        if ac_id_str in self.geofence_objects:
+            self.geofence_objects[ac_id_str].update(msg)
         else:
-            self.geofence_objects[str(msg['ac_id'])] = C2CGeofence(msg)
+            self.geofence_objects[ac_id_str] = C2CGeofence(msg)
         
 
     @timed_function(dt=0.05)
@@ -94,27 +99,23 @@ class C2CGeofenceReceiver(Entity):
         self.mqtt_msgs = []
 
         # Check if geofences for not existing traffic
-        remove_keys = []
-        for key in self.geofence_objects.keys():
-            # Check if key is in traffic callsign list
-            if key not in bs.traf.id:
-                remove_keys.append(key)
-        
+        # Use a set for faster membership testing if bs.traf.id is large
+        traf_ids = set(map(str, bs.traf.id)) if len(bs.traf.id) else set()
+        remove_keys = [key for key in self.geofence_objects.keys() if key not in traf_ids]
         for key in remove_keys:
-            self.geofence_objects[key].delete()
-            self.geofence_objects.pop(key)
+            try:
+                self.geofence_objects[key].delete()
+            finally:
+                self.geofence_objects.pop(key, None)
     
 class C2CGeofence(object):
     def __init__(self, msg):
         self.ac_id = str(msg['ac_id'])
         self.geozone = []
         self.timestamp_s = time.time()
-
-        for i in range(len(msg['geozone'])):
-            lat = float(msg['geozone'][i]['lat']) / 10**7 
-            lon = float(msg['geozone'][i]['lon']) / 10**7 
-            self.geozone.append(lat)
-            self.geozone.append(lon)
+        # Build geozone list with list comprehension
+        gz = msg.get('geozone', [])
+        self.geozone = [coord for pt in gz for coord in (float(pt['lat'])/10**7, float(pt['lon'])/10**7)]
         
         area_created = areafilter.defineArea('GF_' + str(self.ac_id), 'POLY', self.geozone)
 
@@ -128,14 +129,9 @@ class C2CGeofence(object):
         #     print("Geofence creation for " + str(self.ac_id) + " failed with error: " + area_type)
     
     def update(self, msg):
-        self.geozone = []
         self.timestamp_s = time.time()
-
-        for i in range(len(msg['geozone'])):
-            lat = float(msg['geozone'][i]['lat']) / 10**7 
-            lon = float(msg['geozone'][i]['lon']) / 10**7 
-            self.geozone.append(lat)
-            self.geozone.append(lon)
+        gz = msg.get('geozone', [])
+        self.geozone = [coord for pt in gz for coord in (float(pt['lat'])/10**7, float(pt['lon'])/10**7)]
         areafilter.deleteArea('GF_' + str(self.ac_id))
         areafilter.defineArea('GF_' + str(self.ac_id), 'POLY', self.geozone)
 
@@ -159,7 +155,15 @@ class MQTTC2CGeofenceReceiverClient(mqtt.Client):
         return rc
 
     def on_message(self, mqttc, obj, msg):
-        logger.debug("Geofence Receiver MQTT client received message: %(topic)s, %(payload)s", {'topic': msg.topic, 'payload': msg.payload.decode('utf-8')})
+        if logger.isEnabledFor(logging.DEBUG):
+            try:
+                data = json.loads(msg.payload.decode('utf-8'))
+                geozone = data.get('geozone', [])
+                logger.debug("Geofence received: topic=%s ac_id=%s num_points=%d",
+                           msg.topic, data.get('ac_id', 'unknown'), len(geozone))
+            except Exception as e:
+                logger.debug("Geofence Receiver MQTT client received message: topic=%s (parse error: %s)",
+                           msg.topic, str(e))
         self.c2c_geofence_object.recv_mqtt(msg)
 
     def on_connect(self, mqttc, obj, flags, rc):

@@ -59,40 +59,54 @@ class C2COwnstateReceiver(Entity):
         self.mqtt_client.run()
 
     def recv_mqtt(self, msg):
-        self.lock.acquire()
+        """Receive MQTT message; parse outside the lock to minimize contention."""
+        if msg.topic != 'daa/ownstate':
+            return
+
         try:
-            if msg.topic == 'daa/ownstate': 
-                self.mqtt_msg_buf.append(json.loads(msg.payload))
-        finally:
-            self.lock.release()
+            data = json.loads(msg.payload)
+        except Exception as e:
+            logger.warning("Failed to parse ownstate payload: %(err)s", {'err': str(e)})
+            return
+
+        # Append under lock
+        with self.lock:
+            self.mqtt_msg_buf.append(data)
 
     def copy_buffers(self):
-        self.lock.acquire()
-        try:
-            self.mqtt_msgs.extend(self.mqtt_msg_buf)
-
-            # Empty buffers
-            self.mqtt_msg_buf = []
-        finally:
-            self.lock.release()
+        """Move buffered MQTT messages to processing list with minimal copying."""
+        with self.lock:
+            if not self.mqtt_msg_buf:
+                return
+            if self.mqtt_msgs:
+                # Extend existing processing list
+                self.mqtt_msgs.extend(self.mqtt_msg_buf)
+                self.mqtt_msg_buf = []
+            else:
+                # Swap lists to avoid O(n) extend
+                self.mqtt_msgs, self.mqtt_msg_buf = self.mqtt_msg_buf, []
 
     def update_ownstate_object(self, msg):
 
         # Check if msg is valid
-        if None in msg.values():
+        if any(msg.get(k) is None for k in required_keys):
             logger.warning("Received invalid ownstate message: %(msg)s", {'msg': json.dumps(msg)})
             return
         
+        ac_id_str = str(msg.get('ac_id'))
         try:
             # Check if ownstate already exists
-            if str(msg['ac_id']) in self.ownstate_objects.keys():
-                self.ownstate_objects[str(msg['ac_id'])].update(msg)
+            if ac_id_str in self.ownstate_objects:
+                self.ownstate_objects[ac_id_str].update(msg)
             else:
-                self.ownstate_objects[str(msg['ac_id'])] = C2COwnstate(msg)
+                self.ownstate_objects[ac_id_str] = C2COwnstate(msg)
         except TypeError as e:
             logger.error("%(error)s encountered while updating ownstate object: %(msg)s", {'error': str(e), 'msg': json.dumps(msg)})
             # Clean up ownstate object in case it was modified
-            self.ownstate_objects[str(msg['ac_id'])].remove()
+            try:
+                self.ownstate_objects[ac_id_str].remove()
+            except Exception:
+                pass
             return
         
 
@@ -108,15 +122,16 @@ class C2COwnstateReceiver(Entity):
 
         # Check non updated traffic
         time_now_s = time.time()
-        remove_keys = []
-        for key in self.ownstate_objects.keys():
-            # Delete if nothing received for 10 seconds
-            if (time_now_s - self.ownstate_objects[key].timestamp_s) > 10.:
-                self.ownstate_objects[key].remove()
-                remove_keys.append(key)
-        
+        # Collect expired keys in one pass over items to avoid repeated dict lookups
+        remove_keys = [key for key, obj in self.ownstate_objects.items()
+                       if (time_now_s - obj.timestamp_s) > 10.0]
+
+        # Remove expired ownstate objects
         for key in remove_keys:
-            self.ownstate_objects.pop(key)
+            try:
+                self.ownstate_objects[key].remove()
+            finally:
+                self.ownstate_objects.pop(key, None)
     
 class C2COwnstate(object):
     def __init__(self, msg):
@@ -146,7 +161,8 @@ class C2COwnstate(object):
         self.timestamp_s = time.time()
         if self.h_spd < 0.1:
             self.h_spd = 0.
-        bs.traf.move(bs.traf.id2idx(self.ac_id), self.lat, self.lon, self.alt, self.hdg, self.h_spd, -self.vd)
+        idx = bs.traf.id2idx(self.ac_id)
+        bs.traf.move(idx, self.lat, self.lon, self.alt, self.hdg, self.h_spd, -self.vd)
 
     def remove(self):
         bs.traf.delete(bs.traf.id2idx(self.ac_id))
@@ -168,7 +184,15 @@ class MQTTC2COwnstateReceiverClient(mqtt.Client):
         return rc
 
     def on_message(self, mqttc, obj, msg):
-        logger.debug("Ownstate Receiver MQTT client received message: %(topic)s, %(payload)s", {'topic': msg.topic, 'payload': msg.payload.decode('utf-8')})
+        if logger.isEnabledFor(logging.DEBUG):
+            try:
+                data = json.loads(msg.payload.decode('utf-8'))
+                logger.debug("Ownstate received: topic=%s ac_id=%s lat=%d lon=%d alt=%d",
+                           msg.topic, data.get('ac_id', 'unknown'),
+                           data.get('lat', 0), data.get('lon', 0), data.get('alt', 0))
+            except Exception as e:
+                logger.debug("Ownstate Receiver MQTT client received message: topic=%s (parse error: %s)",
+                           msg.topic, str(e))
         self.c2c_ownstate_object.recv_mqtt(msg)
 
     def on_connect(self, mqttc, obj, flags, rc):

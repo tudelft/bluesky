@@ -59,29 +59,36 @@ class C2CTrafficReceiver(Entity):
         self.mqtt_client.run()
 
     def recv_mqtt(self, msg):
-        self.lock.acquire()
+        """Receive MQTT message; parse outside the lock to minimize contention."""
+        if msg.topic != 'daa/traffic':
+            return
         try:
-            if msg.topic == 'daa/traffic': 
-                parsed_msg = json.loads(msg.payload)
-                self.mqtt_msg_buf.append(parsed_msg)
-        finally:
-            self.lock.release()
+            parsed_msg = json.loads(msg.payload)
+        except Exception as e:
+            logger.warning("Failed to parse traffic payload: %(err)s", {'err': str(e)})
+            return
+        # Append under lock
+        with self.lock:
+            self.mqtt_msg_buf.append(parsed_msg)
 
     def copy_buffers(self):
-        self.lock.acquire()
-        try:
-            self.mqtt_msgs.extend(self.mqtt_msg_buf)
-            # Empty buffers
-            self.mqtt_msg_buf = []
-        finally:
-            self.lock.release()
+        """Move buffered MQTT messages to processing list with minimal copying."""
+        with self.lock:
+            if not self.mqtt_msg_buf:
+                return
+            if self.mqtt_msgs:
+                self.mqtt_msgs.extend(self.mqtt_msg_buf)
+                self.mqtt_msg_buf = []
+            else:
+                self.mqtt_msgs, self.mqtt_msg_buf = self.mqtt_msg_buf, []
 
     def update_traffic_object(self, msg):
         # Check if traffic already exists
-        if str(msg['ac_id']) in self.traffic_objects.keys():
-            self.traffic_objects[str(msg['ac_id'])].update(msg)
+        ac_id_str = str(msg.get('ac_id'))
+        if ac_id_str in self.traffic_objects:
+            self.traffic_objects[ac_id_str].update(msg)
         else:
-            self.traffic_objects[str(msg['ac_id'])] = C2CTraffic(msg)
+            self.traffic_objects[ac_id_str] = C2CTraffic(msg)
 
     @timed_function(dt=0.05)
     def update_c2c_traffic(self):
@@ -95,15 +102,14 @@ class C2CTrafficReceiver(Entity):
 
         # Check non updated traffic
         time_now_s = time.time()
-        remove_keys = []
-        for key in self.traffic_objects.keys():
-            # Delete if nothing received for 10 seconds
-            if (time_now_s - self.traffic_objects[key].timestamp_s) > 10.:
-                self.traffic_objects[key].remove()
-                remove_keys.append(key)
-        
+        remove_keys = [key for key, obj in self.traffic_objects.items()
+                       if (time_now_s - obj.timestamp_s) > 10.0]
+
         for key in remove_keys:
-            self.traffic_objects.pop(key)
+            try:
+                self.traffic_objects[key].remove()
+            finally:
+                self.traffic_objects.pop(key, None)
     
 class C2CTraffic(object):
     def __init__(self, msg):
@@ -154,6 +160,15 @@ class MQTTC2CTrafficReceiverClient(mqtt.Client):
         return rc
 
     def on_message(self, mqttc, obj, msg):
+        if logger.isEnabledFor(logging.DEBUG):
+            try:
+                data = json.loads(msg.payload.decode('utf-8'))
+                logger.debug("Traffic received: topic=%s ac_id=%s lat=%d lon=%d alt=%d",
+                           msg.topic, data.get('ac_id', 'unknown'), 
+                           data.get('lat', 0), data.get('lon', 0), data.get('alt', 0))
+            except Exception as e:
+                logger.debug("Traffic Receiver MQTT client received message: topic=%s (parse error: %s)", 
+                           msg.topic, str(e))
         self.c2c_traffic_object.recv_mqtt(msg)
 
     def on_connect(self, mqttc, obj, flags, rc):

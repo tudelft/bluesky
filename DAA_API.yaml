@@ -53,6 +53,19 @@ channels:
         payload:
           $ref: "#/components/schemas/AvoidRequest"
 
+  bluesky/status:
+    subscribe:
+      summary: "Health status of the BlueSky instance. Publishes 'online' when connected and 'offline' as Last Will Testament on crash/disconnect. This is a retained message."
+      operationId: onBlueSkyHealthStatus
+      message:
+        contentType: text/plain
+        payload:
+          type: string
+          enum:
+            - online
+            - offline
+          description: "Status indicator: 'online' when BlueSky is running, 'offline' when crashed or stopped"
+
 components:
   schemas:
 

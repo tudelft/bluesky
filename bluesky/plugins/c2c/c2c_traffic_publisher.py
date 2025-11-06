@@ -40,6 +40,7 @@ class MQTTC2CTrafficPublisher(mqtt.Client):
     def __init__(self, c2c_traffic_object):
         super().__init__()
         self.c2c_traffic_object = c2c_traffic_object
+        self._publish_cache = {}  # Cache to track what was published
 
     def run(self):
         # Make Traffic publisher MQTT client
@@ -60,7 +61,15 @@ class MQTTC2CTrafficPublisher(mqtt.Client):
         return
 
     def on_publish(self, mqttc, obj, mid):
-        logger.debug("Traffic Publisher MQTT client published message with mid: %(mid)s", {'mid': str(mid)}) # ?? improve
+        if logger.isEnabledFor(logging.DEBUG):
+            # Retrieve cached message info if available
+            msg_info = self._publish_cache.pop(mid, None)
+            if msg_info:
+                logger.debug("Traffic published: topic=%s ac_id=%s lat=%d lon=%d alt=%d mid=%d",
+                           msg_info['topic'], msg_info['ac_id'], msg_info['lat'], 
+                           msg_info['lon'], msg_info['alt'], mid)
+            else:
+                logger.debug("Traffic Publisher MQTT client published message with mid: %d", mid)
         return
 
     def on_subscribe(self, mqttc, obj, mid, granted_qos):
@@ -83,55 +92,79 @@ class C2CTrafficPublisher(Entity):
     @timed_function(dt=0.2)
     def publish_c2c_traffic(self):
         
-        # eprint("Number of bluesky traffic objects: ", bs.traf.ntraf)
-
         # Publish traffic not received by c2ctrafficreceiver
         if ((traf_receiver.c2c_traffic_receiver is not None) and (ownstate_receiver.c2c_ownstate_receiver is not None)):
-            # Upper cased keys
-            upper_keys = []
-            for key in traf_receiver.c2c_traffic_receiver.traffic_objects.keys():
-                upper_keys.append(key.upper())
+            upper_keys = {k.upper() for k in traf_receiver.c2c_traffic_receiver.traffic_objects.keys()}
+            upper_keys |= {k.upper() for k in ownstate_receiver.c2c_ownstate_receiver.ownstate_objects.keys()}
 
-            for key in ownstate_receiver.c2c_ownstate_receiver.ownstate_objects.keys():
-                upper_keys.append(key.upper())
-            
-            # For debugging
-            # eprint("Bluesky Traffic ids:")
-            # eprint(bs.traf.id)
-            # eprint("Traffic and Ownstate keys:")
-            # eprint(upper_keys)
+            ntraf = bs.traf.ntraf
+            if ntraf == 0:
+                return
+            ids = bs.traf.id
+            lat = bs.traf.lat
+            lon = bs.traf.lon
+            alt = bs.traf.alt
+            gsn = bs.traf.gsnorth
+            gse = bs.traf.gseast
+            vs = bs.traf.vs
 
-            for i in range(bs.traf.ntraf):
-                if bs.traf.id[i] not in upper_keys:
+            for i in range(ntraf):
+                if str(ids[i]).upper() not in upper_keys:
                     # send resolution over mqtt
-                    body = {}
-                    body['ac_id'] = str(bs.traf.id[i])
-                    body['lat'] = int(bs.traf.lat[i] * 10**7)
-                    body['lon'] = int(bs.traf.lon[i] * 10**7)
-                    body['alt'] = int(bs.traf.alt[i] * 10**3)
+                    body = {
+                        'ac_id': str(ids[i]),
+                        'lat': int(lat[i] * 10**7),
+                        'lon': int(lon[i] * 10**7),
+                        'alt': int(alt[i] * 10**3),
+                        'vn': int(gsn[i] * 10**3),
+                        've': int(gse[i] * 10**3),
+                        'vd': int(-vs[i] * 10**3),
+                    }
 
-
-                    body['vn'] = int(bs.traf.gsnorth[i] * 10**3)
-                    body['ve'] = int(bs.traf.gseast[i] * 10**3)
-                    body['vd'] = int(-bs.traf.vs[i] * 10**3)
-
-                    self.mqtt_client.publish('daa/traffic_out', payload=json.dumps(body))
+                    msg_info = self.mqtt_client.publish('daa/traffic_out', payload=json.dumps(body))
+                    # Cache message info for debug logging
+                    if logger.isEnabledFor(logging.DEBUG) and msg_info.rc == mqtt.MQTT_ERR_SUCCESS:
+                        self.mqtt_client._publish_cache[msg_info.mid] = {
+                            'topic': 'daa/traffic_out',
+                            'ac_id': body['ac_id'],
+                            'lat': body['lat'],
+                            'lon': body['lon'],
+                            'alt': body['alt']
+                        }
         # Send all     
         else:
-            for i in range(bs.traf.ntraf):
+            ntraf = bs.traf.ntraf
+            if ntraf == 0:
+                return
+            ids = bs.traf.id
+            lat = bs.traf.lat
+            lon = bs.traf.lon
+            alt = bs.traf.alt
+            gsn = bs.traf.gsnorth
+            gse = bs.traf.gseast
+            vs = bs.traf.vs
+            for i in range(ntraf):
                 # send resolution over mqtt
-                body = {}
-                body['ac_id'] = str(bs.traf.id[i])
-                body['lat'] = int(bs.traf.lat[i] * 10**7)
-                body['lon'] = int(bs.traf.lon[i] * 10**7)
-                body['alt'] = int(bs.traf.alt[i] * 10**3)
+                body = {
+                    'ac_id': str(ids[i]),
+                    'lat': int(lat[i] * 10**7),
+                    'lon': int(lon[i] * 10**7),
+                    'alt': int(alt[i] * 10**3),
+                    'vn': int(gsn[i] * 10**3),
+                    've': int(gse[i] * 10**3),
+                    'vd': int(-vs[i] * 10**3),
+                }
 
-
-                body['vn'] = int(bs.traf.gsnorth[i] * 10**3)
-                body['ve'] = int(bs.traf.gseast[i] * 10**3)
-                body['vd'] = int(-bs.traf.vs[i] * 10**3)
-
-                self.mqtt_client.publish('daa/traffic_out', payload=json.dumps(body))
+                msg_info = self.mqtt_client.publish('daa/traffic_out', payload=json.dumps(body))
+                # Cache message info for debug logging
+                if logger.isEnabledFor(logging.DEBUG) and msg_info.rc == mqtt.MQTT_ERR_SUCCESS:
+                    self.mqtt_client._publish_cache[msg_info.mid] = {
+                        'topic': 'daa/traffic_out',
+                        'ac_id': body['ac_id'],
+                        'lat': body['lat'],
+                        'lon': body['lon'],
+                        'alt': body['alt']
+                    }
         return
 
 
