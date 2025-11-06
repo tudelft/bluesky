@@ -148,14 +148,12 @@ def profile_section(section_name: str):
 
 def start_cprofile():
     """Start cProfile profiler."""
-    global _cprofile_profiler
     if _cprofile_enabled and _cprofile_profiler:
         _cprofile_profiler.enable()
 
 
 def stop_cprofile():
     """Stop cProfile profiler."""
-    global _cprofile_profiler
     if _cprofile_enabled and _cprofile_profiler:
         _cprofile_profiler.disable()
 
@@ -296,7 +294,6 @@ def get_summary() -> Dict[str, Any]:
 
 def reset_stats():
     """Clear all profiling statistics."""
-    global _profile_stats
     _profile_stats.clear()
 
 
