@@ -1,6 +1,6 @@
 ''' Conflict resolution based on the SSD algorithm described in: https://repository.tudelft.nl/islandora/object/uuid%3A4b92f6b0-dc40-4946-a1ae-7efd0df79401?collection=education '''
 import bluesky as bs
-from bluesky.core import Entity, timed_function
+from bluesky.core import Entity
 import json
 import time
 import os
@@ -43,7 +43,6 @@ if bs.settings.DAA_profiling:
     if _profiling_available:
         prof.enable_profiling()
         prof.enable_cprofile()
-        logger.info("Enhanced profiling enabled")
 
 c2c_avoid_request_publisher_loop_flag = 1
 
@@ -55,9 +54,7 @@ class _DummyContext:
         pass
 
 def init_plugin():
-
-    # Addtional initilisation code
-
+    ''' Initialize the SSD_DRONE plugin '''
     # Configuration parameters
     config = {
         # The name of your plugin
@@ -71,11 +68,6 @@ def init_plugin():
 
     if bs.settings.DAA_profiling:
         logger.info("Extra DAA profiling enabled")
-        if _profiling_available:
-            logger.info("  - Function-level timing enabled")
-            logger.info("  - Memory tracking available: %s", prof._memory_profiling_available)
-            logger.info("  - Use prof.print_stats() to view results")
-            logger.info("  - Use prof.print_memory_stats() to view memory usage")
     else:
         logger.info("Extra DAA profiling disabled")
 
