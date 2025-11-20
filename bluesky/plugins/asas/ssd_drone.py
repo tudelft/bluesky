@@ -280,6 +280,7 @@ class SSD_Drone(ConflictResolution):
         # asas is an object of the ASAS class defined in asas.py
 
 
+    @prof.profile_function("SSD._get_ssd_parameters") if _profiling_available else lambda f: f
     def _get_ssd_parameters(self):
         """Get SSD algorithm parameters and constants."""
         return {
@@ -292,18 +293,21 @@ class SSD_Drone(ConflictResolution):
             'delay': 5.0  # Delay before executing avoidance manoeuvre [s]
         }
 
+    @prof.profile_function("SSD._compute_predicted_positions") if _profiling_available else lambda f: f
     def _compute_predicted_positions(self, ownship, delay):
         """Compute aircraft positions after delay period."""
         lat = ownship.lat + np.degrees(delay * ownship.gsnorth / Rearth)
         lon = ownship.lon + np.degrees(delay * ownship.gseast / ownship.coslat / Rearth)
         return lat, lon
 
+    @prof.profile_function("SSD._create_velocity_circle") if _profiling_available else lambda f: f
     def _create_velocity_circle(self, N_angle):
         """Create unit circle for velocity obstacle construction."""
         angles = np.arange(0, 2 * np.pi, 2 * np.pi / N_angle)
         xyc = np.transpose(np.reshape(np.concatenate((np.sin(angles), np.cos(angles))), (2, N_angle)))
         return xyc
 
+    @prof.profile_function("SSD._compute_pairwise_geometry") if _profiling_available else lambda f: f
     def _compute_pairwise_geometry(self, lat, lon, ntraf):
         """Compute bearing and distance between all aircraft pairs."""
         ind1, ind2 = self.qdrdist_matrix_indices(ntraf)
@@ -316,6 +320,7 @@ class SSD_Drone(ConflictResolution):
         
         return ind1, ind2, qdr, dist
 
+    @prof.profile_function("SSD._compute_velocity_obstacle_vertices") if _profiling_available else lambda f: f
     def _compute_velocity_obstacle_vertices(self, hsepm, dist, qdr, alpham):
         """Calculate velocity obstacle vertices in relative velocity space."""
         # Prevent VO issues in LoS by clamping minimum distance
@@ -339,6 +344,7 @@ class SSD_Drone(ConflictResolution):
             'sinqdrtanalpha': sinqdrtanalpha
         }
 
+    @prof.profile_function("SSD._should_process_aircraft") if _profiling_available else lambda f: f
     def _should_process_aircraft(self, i, ownship, c2c_ownship_ids):
         """Check if aircraft should be processed for SSD construction."""
         # Filter by C2C ownship registration if required
@@ -362,6 +368,7 @@ class SSD_Drone(ConflictResolution):
         
         return True
 
+    @prof.profile_function("SSD._get_velocity_limits") if _profiling_available else lambda f: f
     def _get_velocity_limits(self, ownship, i):
         """Get min/max velocity for aircraft, with validation."""
         vmin = ownship.perf.vmin[i]
@@ -377,6 +384,7 @@ class SSD_Drone(ConflictResolution):
         
         return vmin, vmax
 
+    @prof.profile_function("SSD._create_velocity_circles") if _profiling_available else lambda f: f
     def _create_velocity_circles(self, xyc, vmin, vmax):
         """Create inner and outer velocity circles for SSD."""
         circle_tup = (
@@ -389,6 +397,7 @@ class SSD_Drone(ConflictResolution):
         ]
         return circle_tup, circle_lst
 
+    @prof.profile_function("SSD._set_no_conflict_ssd") if _profiling_available else lambda f: f
     def _set_no_conflict_ssd(self, i, circle_lst, vmin, vmax, FRV_loc, ARV_loc, ARV_calc_loc, 
                             FRV_area_loc, ARV_area_loc):
         """Set SSD values for aircraft with no nearby conflicts."""
@@ -398,6 +407,7 @@ class SSD_Drone(ConflictResolution):
         FRV_area_loc[i] = 0
         ARV_area_loc[i] = np.pi * (vmax ** 2 - vmin ** 2)
 
+    @prof.profile_function("SSD._filter_nearby_aircraft") if _profiling_available else lambda f: f
     def _filter_nearby_aircraft(self, i, ind1, ind2, ind, dist, adsbmax, ntraf):
         """Get indices of aircraft within ADS-B range."""
         i_other = np.delete(np.arange(0, ntraf), i)
@@ -411,6 +421,7 @@ class SSD_Drone(ConflictResolution):
         
         return i_other, ind, fix
 
+    @prof.profile_function("SSD._construct_velocity_obstacle_vertices") if _profiling_available else lambda f: f
     def _construct_velocity_obstacle_vertices(self, i_other, gseast, gsnorth, ind, fix, vmax, vo_trig):
         """Build velocity obstacle triangle vertices for each intruder."""
         x1 = (vo_trig['sinqdr'] + vo_trig['cosqdrtanalpha']) * 2 * vmax
@@ -431,6 +442,7 @@ class SSD_Drone(ConflictResolution):
         
         return xy
 
+    @prof.profile_function("SSD._load_geofence_data") if _profiling_available else lambda f: f
     def _load_geofence_data(self, ownship, i):
         """Load and process geofence coordinates for aircraft."""
         try:
@@ -461,6 +473,7 @@ class SSD_Drone(ConflictResolution):
         except:
             return None, None
 
+    @prof.profile_function("SSD._compute_geofence_segments") if _profiling_available else lambda f: f
     def _compute_geofence_segments(self, xs_gf, ys_gf):
         """Compute geofence segment vectors and rotation matrices."""
         xs_gf_next = np.roll(xs_gf, -1)
@@ -476,6 +489,7 @@ class SSD_Drone(ConflictResolution):
         
         return phis_gf, x_hats_prime, y_hats_prime, xs_gf, ys_gf
 
+    @prof.profile_function("SSD._add_intruder_vo_to_clipper") if _profiling_available else lambda f: f
     def _add_intruder_vo_to_clipper(self, pc, xy, j, dist, ind, hsepm, i_other, qdr, beta, vmax):
         """Add velocity obstacle for a single intruder to clipper."""
         if dist[ind[j]] > hsepm:
@@ -493,6 +507,7 @@ class SSD_Drone(ConflictResolution):
         
         pc.AddPath(VO, pyclipper.PT_CLIP, True)
 
+    @prof.profile_function("SSD._add_geofence_vos_to_clipper") if _profiling_available else lambda f: f
     def _add_geofence_vos_to_clipper(self, pc, ownship, i, i_other, j, xs_gf, ys_gf, 
                                      phis_gf, x_hats_prime, y_hats_prime, N_angle, vmax):
         """Add geofence-based velocity obstacles for an intruder."""
@@ -587,8 +602,11 @@ class SSD_Drone(ConflictResolution):
             except:
                 pass
 
+    @prof.profile_function("SSD._finalize_ssd_regions") if _profiling_available else lambda f: f
     def _finalize_ssd_regions(self, ARV, FRV, circle_lst, vmin, vmax, ownship, i, xyc):
-        """Compute final FRV and ARV regions and calculate ARV subset for resolution."""
+        """ Compute a smaller subset of the ARV around the current speed if possible
+            TODO: Improve pruning of the ARV area as +- 0.1 m/s may be too strict for now just copy the full ARV
+                  for now, return full ARV"""
         if len(ARV) == 0:
             return [], circle_lst, [], np.pi * (vmax ** 2 - vmin ** 2), 0
         elif len(FRV) == 0:
@@ -603,6 +621,7 @@ class SSD_Drone(ConflictResolution):
         FRV_area = self.area(FRV)
         ARV_area = self.area(ARV)
         
+        # Comment out and replace with ARV_calc = ARV if further perf improvements are needed
         # Compute smaller ARV ring around current speed
         pc2 = pyclipper.Pyclipper()
         pc2.AddPaths(pyclipper.scale_from_clipper(
@@ -618,9 +637,9 @@ class SSD_Drone(ConflictResolution):
         
         # Fallback to full ARV if no intersection
         if len(ARV_calc) == 0:
-            ARV_calc = ARV
+            ARV_calc = ARV # Use full ARV
         else:
-            ARV_calc = ARV  # Use full ARV per original logic
+            ARV_calc = ARV # Also use full ARV until logic is improved
         
         return ARV, FRV, ARV_calc, FRV_area, ARV_area
 
@@ -750,10 +769,228 @@ class SSD_Drone(ConflictResolution):
         conf.ARV_area = ARV_area_loc
 
 
+    @prof.profile_function("SSD._find_closest_arv_point") if _profiling_available else lambda f: f
+    def _find_closest_arv_point(self, ARV_polygons, gseast, gsnorth):
+        """Find closest point on ARV boundary to current velocity.
+        
+        Args:
+            ARV_polygons: List of ARV polygon exteriors
+            gseast: Current east velocity component [m/s]
+            gsnorth: Current north velocity component [m/s]
+            
+        Returns:
+            Tuple of (x, y) coordinates of closest point, or (0., 0.) if no ARV
+        """
+        if ARV_polygons is None or len(ARV_polygons) == 0:
+            return 0., 0.
+            
+        # Loop through all exteriors and append. Afterwards concatenate
+        p = []
+        q = []
+        for j in range(len(ARV_polygons)):
+            p.append(np.array(ARV_polygons[j]))
+            q.append(np.diff(np.row_stack((p[j], p[j][0])), axis=0))
+        p = np.concatenate(p)
+        q = np.concatenate(q)
+        
+        # Calculate squared distance between edges
+        l2 = np.sum(q ** 2, axis=1)
+        # Catch l2 == 0 (exception)
+        same = l2 < 1e-8
+        l2[same] = 1.
+        
+        # Calc t - parameter along each edge
+        t = np.sum((np.array([gseast, gsnorth]) - p) * q, axis=1) / l2
+        # t must be limited between 0 and 1
+        t = np.clip(t, 0., 1.)
+        t[same] = 0.
+        
+        # Calculate closest point to each edge
+        x1 = p[:, 0] + t * q[:, 0]
+        y1 = p[:, 1] + t * q[:, 1]
+        
+        # Get distance squared and sort
+        d2 = (x1 - gseast) ** 2 + (y1 - gsnorth) ** 2
+        ind = np.argsort(d2)
+        
+        return x1[ind[0]], y1[ind[0]]
+
+    @prof.profile_function("SSD._calculate_resolution_waypoint") if _profiling_available else lambda f: f
+    def _calculate_resolution_waypoint(self, ownship, i, asase, asasn, tcpamax):
+        """Calculate lat/lon/alt waypoint from velocity resolution.
+        
+        Args:
+            ownship: Aircraft object
+            i: Aircraft index
+            asase: East component of resolution velocity [m/s]
+            asasn: North component of resolution velocity [m/s]
+            tcpamax: Time to closest point of approach [s]
+            
+        Returns:
+            Tuple of (tres, qdr_res, dist_res, lat_res, lon_res, alt_res, dx_n_res, dy_n_res)
+        """
+        tres = tcpamax
+        dx_res = asase * tres
+        dy_res = asasn * tres
+        qdr_res = np.rad2deg(np.arctan2(dx_res, dy_res))
+        dist_res = np.sqrt(dx_res**2 + dy_res**2) / nm
+        lat_res, lon_res = geo.qdrpos(ownship.lat[i], ownship.lon[i], qdr_res, dist_res)
+        alt_res = ownship.alt[i]  # [m]
+        
+        # Calculate normalized direction vector
+        dx_n_res = dx_res / (dist_res * nm) if dist_res > 0 else 0.
+        dy_n_res = dy_res / (dist_res * nm) if dist_res > 0 else 0.
+        
+        return tres, qdr_res, dist_res, lat_res, lon_res, alt_res, dx_n_res, dy_n_res
+
+    @prof.profile_function("SSD._check_geofence_status") if _profiling_available else lambda f: f
+    def _check_geofence_status(self, ownship, i, lat_res, lon_res):
+        """Check if geofence is defined and validate ownship/resolution positions.
+        
+        Args:
+            ownship: Aircraft object
+            i: Aircraft index
+            lat_res: Resolution latitude
+            lon_res: Resolution longitude
+            
+        Returns:
+            Tuple of (geofence_defined, ownship_in_geofence, solution_in_geofence)
+        """
+        geofence_defined = False
+        ownship_in_geofence = False
+        solution_in_geofence = True
+        
+        try:
+            areafilter.basic_shapes['GF_' + str(ownship.id[i])]
+        except:
+            pass
+        else:
+            geofence_defined = True
+            ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), 
+                                                         ownship.lat[i], ownship.lon[i], 0)
+            if not ownship_in_geofence:
+                logger.warning("%(ownship)s is not within the currently active geofence", 
+                             {'ownship': str(ownship.id[i])})
+            
+            if ownship_in_geofence:
+                solution_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), 
+                                                             lat_res, lon_res, 0)
+        
+        return geofence_defined, ownship_in_geofence, solution_in_geofence
+
+    @prof.profile_function("SSD._adjust_resolution_for_geofence") if _profiling_available else lambda f: f
+    def _adjust_resolution_for_geofence(self, ownship, i, qdr_res, dx_n_res, dy_n_res):
+        """Adjust resolution to closest geofence segment when solution is outside.
+        
+        Args:
+            ownship: Aircraft object
+            i: Aircraft index
+            qdr_res: Resolution bearing [deg]
+            dx_n_res: Normalized east component of resolution
+            dy_n_res: Normalized north component of resolution
+            
+        Returns:
+            Tuple of (lat_res, lon_res) adjusted to geofence boundary
+        """
+        # Loop through geofence coordinates
+        geofence = areafilter.basic_shapes['GF_' + str(ownship.id[i])]
+        coordinates = np.reshape(geofence.coordinates, (int(len(geofence.coordinates) / 2), 2))
+        
+        # Vectorize geofence coordinate processing
+        lats_gf = coordinates[:, 0]
+        lons_gf = coordinates[:, 1]
+        qdrs_gf, dists_gf = geo.qdrdist(
+            np.full_like(lats_gf, ownship.lat[i]),
+            np.full_like(lons_gf, ownship.lon[i]),
+            lats_gf,
+            lons_gf
+        )
+        dists_gf = dists_gf * nm
+        
+        xs_gf = dists_gf * np.sin(np.deg2rad(qdrs_gf))  # [m] East
+        ys_gf = dists_gf * np.cos(np.deg2rad(qdrs_gf))  # [m] North
+        
+        if (get_signed_area_polygon(xs_gf, ys_gf) > 0):
+            xs_gf = xs_gf[::-1]
+            ys_gf = ys_gf[::-1]
+        
+        # Generate data for each geofence segment 0 to 1, 1 to 2, 2 to 3 ..... n to 0.
+        xs_gf_next = np.roll(xs_gf, -1)
+        ys_gf_next = np.roll(ys_gf, -1)
+        dxs_gf = xs_gf_next - xs_gf
+        dys_gf = ys_gf_next - ys_gf
+        
+        # Calculate values (phis) of rotation of geofence segments
+        phis_gf = np.arctan2(dys_gf, dxs_gf)
+        y_hats_prime = np.array([-np.sin(phis_gf), np.cos(phis_gf)])
+        d_geo = -(xs_gf * y_hats_prime[0] + ys_gf * y_hats_prime[1])
+        dist_gf_frac = -(-np.sin(phis_gf) * dx_n_res + np.cos(phis_gf) * dy_n_res)
+        
+        projected_distances = d_geo[dist_gf_frac > 0] * (1. / dist_gf_frac[dist_gf_frac > 0])
+        
+        # Recalculate resolution
+        dist_res = min(projected_distances) / nm
+        lat_res, lon_res = geo.qdrpos(ownship.lat[i], ownship.lon[i], qdr_res, dist_res)
+        
+        return lat_res, lon_res
+
+    @prof.profile_function("SSD._publish_avoid_request") if _profiling_available else lambda f: f
+    def _publish_avoid_request(self, ownship, i, lat_res, lon_res, alt_res, tres, dist_res):
+        """Publish MQTT avoid request message with timeout check.
+        
+        Args:
+            ownship: Aircraft object
+            i: Aircraft index
+            lat_res: Resolution latitude
+            lon_res: Resolution longitude
+            alt_res: Resolution altitude [m]
+            tres: Time to resolution [s]
+            dist_res: Distance to resolution [nm]
+            
+        Returns:
+            True if message was published, False otherwise
+        """
+        # Check timeout for conflict resolution
+        current_time = time.time()
+        delta_cr_time = current_time - conflictresolutiontime.cr_time[i]
+        
+        if delta_cr_time <= 4.0:
+            return False
+        
+        conflictresolutiontime.cr_time[i] = current_time
+        
+        # Send resolution over MQTT
+        body = {
+            'ac_id': ownship.id[i],
+            'timestamp': int(time.time()),
+            'waypoint': {
+                'lat': int(lat_res * 10**7),
+                'lon': int(lon_res * 10**7),
+                'alt': int(alt_res * 10**3)
+            },
+            'tres': int(time.time() + float(tres)),
+            'vres': float(dist_res * nm / tres) if not np.isclose(tres, 0.0) else 0.0
+        }
+        
+        logger.debug("Sending avoid_request: %(body)s", {'body': json.dumps(body)})
+        msg_info = avoid_request_publisher.mqtt_client.publish('daa/avoid_request', 
+                                                               payload=json.dumps(body))
+        
+        # Cache message info for debug logging
+        if logger.isEnabledFor(logging.DEBUG) and msg_info.rc == mqtt.MQTT_ERR_SUCCESS:
+            avoid_request_publisher.mqtt_client._publish_cache[msg_info.mid] = {
+                'topic': 'daa/avoid_request',
+                'ac_id': body['ac_id'],
+                'lat': body['waypoint']['lat'],
+                'lon': body['waypoint']['lon'],
+                'alt': body['waypoint']['alt']
+            }
+        
+        return True
+
     @prof.profile_function("SSD.calculate_resolution") if _profiling_available else lambda f: f
     def calculate_resolution(self, conf, ownship):
         """ Calculates closest conflict-free point according to ruleset """
-        # It's just linalg, however credits to: http://stackoverflow.com/a/1501725
         # Variables
         ARV = conf.ARV_calc
         gsnorth = ownship.gsnorth
@@ -774,43 +1011,14 @@ class SSD_Drone(ConflictResolution):
             
             # Only those that are in conflict need to resolve
             if conf.inconf[i] and ARV[i] is not None and len(ARV[i]) > 0:
-                logger.debug("%(ownship)s is in conflict, resolving...", {'ownship': str(bs.traf.id[i])})
+                logger.debug("%(ownship)s is in conflict, resolving...", 
+                           {'ownship': str(bs.traf.id[i])})
 
-                # Loop through all exteriors and append. Afterwards concatenate
-                p = []
-                q = []
-                for j in range(len(ARV[i])):
-                    p.append(np.array(ARV[i][j]))
-                    q.append(np.diff(np.row_stack((p[j], p[j][0])), axis=0))
-                p = np.concatenate(p)
-                q = np.concatenate(q)
-                # Calculate squared distance between edges
-                l2 = np.sum(q ** 2, axis=1)
-                # Catch l2 == 0 (exception)
-                same = l2 < 1e-8
-                l2[same] = 1.
-                # Calc t
-                t = np.sum((np.array([gseast[i], gsnorth[i]]) - p) * q, axis=1) / l2
-                # Speed of boolean indices only slightly faster (negligible)
-                # t must be limited between 0 and 1
-                t = np.clip(t, 0., 1.)
-                t[same] = 0.
-                # Calculate closest point to each edge
-                x1 = p[:, 0] + t * q[:, 0]
-                y1 = p[:, 1] + t * q[:, 1]
-                # Get distance squared
-                d2 = (x1 - gseast[i]) ** 2 + (y1 - gsnorth[i]) ** 2
-                # Sort distance
-                ind = np.argsort(d2)
-                x1 = x1[ind]
-                y1 = y1[ind]
-
-                conf.asase[i] = x1[0]
-                conf.asasn[i] = y1[0]
-
-            # Those that are not in conflict will be assigned zeros
-            # Or those that have no solutions (full ARV)
+                # Find closest point on ARV boundary
+                conf.asase[i], conf.asasn[i] = self._find_closest_arv_point(
+                    ARV[i], gseast[i], gsnorth[i])
             else:
+                # Those not in conflict or with no solutions (full ARV)
                 conf.asase[i] = 0.
                 conf.asasn[i] = 0.
 
@@ -823,107 +1031,25 @@ class SSD_Drone(ConflictResolution):
                     continue
                 
             if (conf.asase[i] != 0. and conf.asasn[i] != 0.):
-                # calculate t_cpa for resolution
-                tres = conf.tcpamax[i]
-                dx_res = conf.asase[i] * tres
-                dy_res = conf.asasn[i] * tres
-                qdr_res = np.rad2deg(np.arctan2(dx_res, dy_res))
-                dist_res = np.sqrt(dx_res**2 + dy_res**2) / nm
-                lat_res, lon_res = geo.qdrpos(ownship.lat[i], ownship.lon[i], qdr_res, dist_res)
-                alt_res = ownship.alt[i] # [m]
+                # Calculate resolution waypoint
+                tres, qdr_res, dist_res, lat_res, lon_res, alt_res, dx_n_res, dy_n_res = \
+                    self._calculate_resolution_waypoint(ownship, i, conf.asase[i], 
+                                                       conf.asasn[i], conf.tcpamax[i])
 
-                # Check resolution in geofence
-                geofence_defined = False
-                ownship_in_geofence = False
-                solution_in_geofence = True
-                try:
-                    areafilter.basic_shapes['GF_' + str(ownship.id[i])]
-                except:
-                    pass
-                else:
-                    geofence_defined = True
-                    ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), ownship.lat[i], ownship.lon[i], 0)
-                    if not ownship_in_geofence:
-                        logger.warning("%(ownship)s is not within the currently active geofence", {'ownship': str(bs.traf.id[i])})
+                # Check geofence status
+                geofence_defined, ownship_in_geofence, solution_in_geofence = \
+                    self._check_geofence_status(ownship, i, lat_res, lon_res)
 
-                if geofence_defined and ownship_in_geofence:
-                    solution_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), lat_res, lon_res, 0)
+                # Adjust resolution if outside geofence
+                if geofence_defined and ownship_in_geofence and not solution_in_geofence:
+                    lat_res, lon_res = self._adjust_resolution_for_geofence(
+                        ownship, i, qdr_res, dx_n_res, dy_n_res)
+                    solution_in_geofence = True
 
-                    dx_n_res = dx_res / (dist_res * nm) # x normal vector element of resolution
-                    dy_n_res = dy_res / (dist_res * nm) # y normal vector element of resolution
-
-                    # Compensate solution to closest geofence segment
-                    if (not solution_in_geofence):
-                        # Loop through geofence coordinates
-                        geofence = areafilter.basic_shapes['GF_' + str(ownship.id[i])]
-                        coordinates = np.reshape(geofence.coordinates, (int(len(geofence.coordinates) / 2), 2))
-                        # Vectorize geofence coordinate processing
-                        lats_gf = coordinates[:, 0]
-                        lons_gf = coordinates[:, 1]
-                        qdrs_gf, dists_gf = geo.qdrdist(
-                            np.full_like(lats_gf, ownship.lat[i]),
-                            np.full_like(lons_gf, ownship.lon[i]),
-                            lats_gf,
-                            lons_gf
-                        )
-                        dists_gf = dists_gf * nm
-                        
-                        xs_gf = dists_gf * np.sin(np.deg2rad(qdrs_gf)) # [m] East
-                        ys_gf = dists_gf * np.cos(np.deg2rad(qdrs_gf)) # [m] North
-                        
-                        if (get_signed_area_polygon(xs_gf, ys_gf) > 0):
-                            xs_gf = xs_gf[::-1]
-                            ys_gf = ys_gf[::-1]
-                        
-                        # Generate data for each geofence segment 0 to 1, 1 to 2, 2 to 3 ..... n to 0.
-                        # Vectorize segment calculation
-                        xs_gf_next = np.roll(xs_gf, -1)
-                        ys_gf_next = np.roll(ys_gf, -1)
-                        dxs_gf = xs_gf_next - xs_gf
-                        dys_gf = ys_gf_next - ys_gf
-
-                        # calculate values (phis) of rotation of geofence segments
-                        phis_gf = np.arctan2(dys_gf, dxs_gf)
-                        y_hats_prime = np.array([-np.sin(phis_gf), np.cos(phis_gf)])
-                        d_geo = -(xs_gf * y_hats_prime[0] + ys_gf * y_hats_prime[1])
-                        dist_gf_frac = -(-np.sin(phis_gf) * dx_n_res + np.cos(phis_gf) * dy_n_res)
-
-                        projected_distances = d_geo[dist_gf_frac>0] * (1. / dist_gf_frac[dist_gf_frac>0])
-                        
-                        # Recalculate resolution
-                        dist_res = min(projected_distances) / nm
-                        lat_res, lon_res = geo.qdrpos(ownship.lat[i], ownship.lon[i], qdr_res, dist_res)
-                        solution_in_geofence = True
-
-                # Check timeout for conflict resolution
-                current_time = time.time()
-                delta_cr_time = current_time - conflictresolutiontime.cr_time[i]
-                
-                if (delta_cr_time > 4.0 and solution_in_geofence):
-                    conflictresolutiontime.cr_time[i] = current_time
-                    # send resolution over mqtt
-                    body = {}
-                    body['ac_id'] = ownship.id[i]
-                    body['timestamp'] = int(time.time())
-                    body['waypoint'] = {}
-                    body['waypoint']['lat'] = int(lat_res * 10**7)
-                    body['waypoint']['lon'] = int(lon_res * 10**7)
-                    body['waypoint']['alt'] = int(alt_res * 10**3)
-                    body['tres'] = int(time.time() + float(tres))
-                    # Make sure vres is not NaN
-                    body['vres'] = float(dist_res * nm / tres) if not np.isclose(tres, 0.0) else 0.0
-
-                    logger.debug("Sending avoid_request: %(body)s", {'body': json.dumps(body)})
-                    msg_info = avoid_request_publisher.mqtt_client.publish('daa/avoid_request', payload=json.dumps(body))
-                    # Cache message info for debug logging
-                    if logger.isEnabledFor(logging.DEBUG) and msg_info.rc == mqtt.MQTT_ERR_SUCCESS:
-                        avoid_request_publisher.mqtt_client._publish_cache[msg_info.mid] = {
-                            'topic': 'daa/avoid_request',
-                            'ac_id': body['ac_id'],
-                            'lat': body['waypoint']['lat'],
-                            'lon': body['waypoint']['lon'],
-                            'alt': body['waypoint']['alt']
-                        }
+                # Publish MQTT avoid request if timeout elapsed and solution is valid
+                if solution_in_geofence:
+                    self._publish_avoid_request(ownship, i, lat_res, lon_res, alt_res, 
+                                                tres, dist_res)
 
             # reset resolution as external parties have to respond to it
             conf.asase[i] = gseast[i]
