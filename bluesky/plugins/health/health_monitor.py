@@ -48,7 +48,8 @@ class MQTTHealthClient(mqtt.Client):
         logger.info("Health MQTT connected with result: %s", mqtt.error_string(rc))
         # Announce online state (retained)
         topic = "bluesky/status"
-        self.publish(topic, payload="online", qos=1, retain=True)
+        payload = {"status": "online", "ts": int(time.time()), "sim_time": 0.0, "sim_dt": 0.0, "sim_state": 0, "ntraf": 0, "pid": os.getpid()}
+        self.publish(topic, payload=json.dumps(payload), qos=1, retain=True)
 
     def on_disconnect(self, client, userdata, rc):
         logger.warning("Health MQTT disconnected: rc=%s", rc)
@@ -69,7 +70,8 @@ class HealthMonitor:
 
         # Set Last Will: broker publishes 'offline' if we crash
         will_topic = "bluesky/status"
-        self.mqtt_client.will_set(will_topic, payload="offline", qos=1, retain=True)
+        will_payload = {"status": "offline", "ts": int(time.time()), "sim_time": 0.0, "sim_dt": 0.0, "sim_state": 0, "ntraf": 0, "pid": os.getpid()}
+        self.mqtt_client.will_set(will_topic, payload=json.dumps(will_payload), qos=1, retain=True)
 
         try:
             self.mqtt_client.connect(host, port, 60)
@@ -90,7 +92,8 @@ class HealthMonitor:
         try:
             # Publish 'offline' on graceful stop
             topic = "bluesky/status"
-            self.mqtt_client.publish(topic, payload="offline", qos=1, retain=True)
+            payload = {"status": "offline", "ts": int(time.time()), "sim_time": 0.0, "sim_dt": 0.0, "sim_state": 0, "ntraf": 0, "pid": os.getpid()}
+            self.mqtt_client.publish(topic, payload=json.dumps(payload), qos=1, retain=True)
         except Exception:
             pass
         self.mqtt_client.loop_stop()
@@ -126,7 +129,7 @@ class HealthMonitor:
         sim_state = int(getattr(getattr(bs, 'sim', None), 'state', 0) or 0)
         ntraf = int(getattr(getattr(bs, 'traf', None), 'ntraf', 0) or 0)
         return {
-            'status': 'ok',
+            'status': 'online',
             'ts': ts,
             'sim_time': sim_time,
             'sim_dt': sim_dt,
