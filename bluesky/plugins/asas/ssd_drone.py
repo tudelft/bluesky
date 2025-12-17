@@ -490,14 +490,14 @@ class SSD_Drone(ConflictResolution):
         return phis_gf, x_hats_prime, y_hats_prime, xs_gf, ys_gf
 
     @prof.profile_function("SSD._add_intruder_vo_to_clipper") if _profiling_available else lambda f: f
-    def _add_intruder_vo_to_clipper(self, pc, xy, j, dist, ind, hsepm, i_other, qdr, beta, vmax):
+    def _add_intruder_vo_to_clipper(self, pc, xy, j, dist, ind, hsepm, i_other, qdr, beta, vmax, i):
         """Add velocity obstacle for a single intruder to clipper."""
         if dist[ind[j]] > hsepm:
             # Normal triangular VO
             VO = pyclipper.scale_to_clipper(tuple(map(tuple, xy[j, :, :])))
         else:
             # Line-of-sight: use dart-tip shape
-            qdr_los = qdr[ind[j]] + np.pi if i_other[j] < ind[j] else qdr[ind[j]]
+            qdr_los = qdr[ind[j]] + np.pi if i_other[j] < i else qdr[ind[j]]
             leg = 1.1 * vmax / np.cos(beta) * np.array([1, 1, 1, 0])
             angles_los = np.array([qdr_los + 2 * beta, qdr_los, qdr_los - 2 * beta, 0.])
             x_los = leg * np.sin(angles_los)
@@ -743,7 +743,7 @@ class SSD_Drone(ConflictResolution):
             
             # Add velocity obstacles for each intruder
             for j in range(len(i_other)):
-                self._add_intruder_vo_to_clipper(pc, xy, j, dist, ind, hsepm, i_other, qdr, beta, vmax)
+                self._add_intruder_vo_to_clipper(pc, xy, j, dist, ind, hsepm, i_other, qdr, beta, vmax, i)
                 
                 # Add geofence-based VOs if geofence is active
                 if geofence_data is not None:
