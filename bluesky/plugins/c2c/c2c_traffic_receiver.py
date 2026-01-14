@@ -142,7 +142,17 @@ class C2CTraffic(object):
         bs.traf.move(bs.traf.id2idx(self.ac_id), self.lat, self.lon, self.alt, self.hdg, self.h_spd, -self.vd)
 
     def remove(self):
-        bs.traf.delete(bs.traf.id2idx(self.ac_id))
+        """Remove aircraft from traffic. Check if aircraft exists first."""
+        try:
+            idx = bs.traf.id2idx(self.ac_id)
+            # id2idx returns int for single id, list for multiple ids
+            if isinstance(idx, list):
+                idx = idx[0] if idx else -1
+            if idx >= 0:  # Only delete if aircraft exists
+                bs.traf.delete(idx)
+        except Exception as e:
+            # Gracefully handle deletion errors (aircraft may already be deleted)
+            pass
 
 class MQTTC2CTrafficReceiverClient(mqtt.Client):
     def __init__(self, c2c_traffic_object):

@@ -87,13 +87,26 @@ class C2COwnstateReceiver(Entity):
                 self.mqtt_msgs, self.mqtt_msg_buf = self.mqtt_msg_buf, []
 
     def update_ownstate_object(self, msg):
+        ac_id_str = str(msg.get('ac_id'))
+        
+        # Handle delete requests first (before validation)
+        if msg.get('delete', False):
+            # Remove from our tracking dict
+            if ac_id_str in self.ownstate_objects:
+                try:
+                    self.ownstate_objects[ac_id_str].remove()
+                except Exception as e:
+                    logger.debug("Failed to remove aircraft %(ac_id)s: %(err)s", 
+                                {'ac_id': ac_id_str, 'err': str(e)})
+                finally:
+                    self.ownstate_objects.pop(ac_id_str, None)
+            return
 
         # Check if msg is valid
         if any(msg.get(k) is None for k in required_keys):
             logger.warning("Received invalid ownstate message: %(msg)s", {'msg': json.dumps(msg)})
             return
         
-        ac_id_str = str(msg.get('ac_id'))
         try:
             # Check if ownstate already exists
             if ac_id_str in self.ownstate_objects:
@@ -162,10 +175,23 @@ class C2COwnstate(object):
         if self.h_spd < 0.1:
             self.h_spd = 0.
         idx = bs.traf.id2idx(self.ac_id)
-        bs.traf.move(idx, self.lat, self.lon, self.alt, self.hdg, self.h_spd, -self.vd)
+        # Handle both int and list return types from id2idx
+        if isinstance(idx, (list, tuple)):
+            if len(idx) > 0:
+                idx = idx[0]
+            else:
+                return  # Aircraft not found
+        if idx >= 0:
+            bs.traf.move(idx, self.lat, self.lon, self.alt, self.hdg, self.h_spd, -self.vd)
 
     def remove(self):
-        bs.traf.delete(bs.traf.id2idx(self.ac_id))
+        idx = bs.traf.id2idx(self.ac_id)
+        # id2idx can return int or list; handle both cases
+        if isinstance(idx, (list, tuple)):
+            if len(idx) > 0 and idx[0] >= 0:
+                bs.traf.delete(idx[0])
+        elif idx >= 0:  # Single int index
+            bs.traf.delete(idx)
 
 class MQTTC2COwnstateReceiverClient(mqtt.Client):
     def __init__(self, c2c_ownstate_object):
