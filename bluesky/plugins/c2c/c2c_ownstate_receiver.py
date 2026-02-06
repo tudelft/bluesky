@@ -17,10 +17,20 @@ import logging.config
 class UTCFormatter(logging.Formatter):
     converter = time.gmtime
 
-with open('../logging_c2c.json', 'r') as f:
-    config = json.load(f)
+# Try to load logging config from relative path, with fallback to absolute path
+logging_config_path = '../logging_c2c.json'
+if not os.path.exists(logging_config_path):
+    # Try absolute path from bluesky root
+    logging_config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logging_c2c.json')
 
-logging.config.dictConfig(config)
+if os.path.exists(logging_config_path):
+    with open(logging_config_path, 'r') as f:
+        config = json.load(f)
+    logging.config.dictConfig(config)
+else:
+    # Fallback to basic config if file not found
+    logging.basicConfig(level=logging.INFO)
+
 logger = logging.getLogger("ownstate_receiver")
 
 required_keys = ['ac_id', 'lat', 'lon', 'alt', 'vn', 've', 'vd']

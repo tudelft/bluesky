@@ -23,10 +23,18 @@ import logging
 import logging.config
 class UTCFormatter(logging.Formatter):
     converter = time.gmtime
-with open('../logging_c2c.json', 'r') as f:
-    config = json.load(f)
 
-logging.config.dictConfig(config)
+logging_config_path = '../logging_c2c.json'
+if not os.path.exists(logging_config_path):
+    logging_config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logging_c2c.json')
+
+if os.path.exists(logging_config_path):
+    with open(logging_config_path, 'r') as f:
+        config = json.load(f)
+    logging.config.dictConfig(config)
+else:
+    logging.basicConfig(level=logging.INFO)
+
 logger = logging.getLogger("SSD_drone")
 
 # Import profiling utilities
@@ -66,12 +74,12 @@ def init_plugin():
 
     logger.info("SSD_DRONE plugin initialized")
 
-    if bs.settings.DAA_profiling:
+    if getattr(bs.settings, 'DAA_profiling', False):
         logger.info("Extra DAA profiling enabled")
     else:
         logger.info("Extra DAA profiling disabled")
 
-    if bs.settings.avoid_ownship_only:
+    if getattr(bs.settings, 'avoid_ownship_only', False):
         logger.info("Sending avoidance requests only to aircraft registered in the C2C...")
     else:
         logger.info("Sending avoidance requests to all air traffic...")
@@ -112,7 +120,12 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
 
     def run(self):
         # Make Traffic publisher MQTT client
-        self.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
+        mqtt_host = os.environ.get("MQTT_HOST")
+        mqtt_port = os.environ.get("MQTT_PORT")
+        if not mqtt_host or not mqtt_port:
+            logger.warning("MQTT_HOST/MQTT_PORT not set; avoid_request publisher not started")
+            return
+        self.connect(mqtt_host, int(mqtt_port), 60)
         self.loop_start()
 
         while c2c_avoid_request_publisher_loop_flag == 1:
@@ -155,9 +168,16 @@ class C2CAvoidRequestPublisher(Entity):
         super().__init__()
         # Start mqtt client to read out control commands
         self.mqtt_client = MQTTAvoidRequestPublisher(self)
-        self.mqtt_client.run()
+        if getattr(bs.settings, 'c2c_enable_mqtt', True):
+            self.mqtt_client.run()
+        else:
+            logger.info("C2C MQTT disabled; avoid_request publisher not started")
 
-avoid_request_publisher = C2CAvoidRequestPublisher()
+if getattr(bs.settings, 'c2c_enable_mqtt', True):
+    avoid_request_publisher = C2CAvoidRequestPublisher()
+else:
+    avoid_request_publisher = None
+
 class SSD_Drone(ConflictResolution):
     def loaded_pyclipper():
         """ Return true if pyclipper is successfully loaded """
@@ -290,7 +310,7 @@ class SSD_Drone(ConflictResolution):
             'alpham': 0.4999 * np.pi,  # Maximum half-angle for VO [rad]
             'betalos': np.pi / 4,  # Minimum divertion angle for LOS [rad]
             'adsbmax': bs.settings.DAA_radius * nm,  # Maximum ADS-B range [m]
-            'delay': 5.0  # Delay before executing avoidance manoeuvre [s]
+            'delay': bs.settings.system_delay  # Assumed delay of the entire system. Drone state is extrapolated into the future [s]
         }
 
     @prof.profile_function("SSD._compute_predicted_positions") if _profiling_available else lambda f: f
@@ -348,23 +368,15 @@ class SSD_Drone(ConflictResolution):
     def _should_process_aircraft(self, i, ownship, c2c_ownship_ids):
         """Check if aircraft should be processed for SSD construction."""
         # Filter by C2C ownship registration if required
-        if bs.settings.avoid_ownship_only:
-            if bs.traf.id[i] not in c2c_ownship_ids:
-                return False
+        if bs.settings.avoid_ownship_only and bs.traf.id[i] not in c2c_ownship_ids:
+            return False
         
-        logger.debug("Constructing SSD for %(ownship)s as it is registered in the C2C", 
-                    {'ownship': str(bs.traf.id[i])})
+        # Check if geofence is defined and aircraft is within geofence
+        geofence_defined, ownship_in_geofence, _ = self._check_geofence_status(ownship, i)
         
-        # Check if aircraft is within active geofence
-        try:
-            areafilter.basic_shapes['GF_' + str(ownship.id[i])]
-            ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), 
-                                                         ownship.lat[i], ownship.lon[i], 0)
-            if not ownship_in_geofence:
-                logger.debug("%s is not within the currently active geofence", ownship.id[i])
-                return True  # Continue processing but note geofence status
-        except:
-            pass
+        # If geofence is not defined or ownship is outside geofence, skip SSD construction for this aircraft
+        if not geofence_defined or not ownship_in_geofence:
+            return False
         
         return True
 
@@ -408,8 +420,8 @@ class SSD_Drone(ConflictResolution):
         ARV_area_loc[i] = np.pi * (vmax ** 2 - vmin ** 2)
 
     @prof.profile_function("SSD._filter_nearby_aircraft") if _profiling_available else lambda f: f
-    def _filter_nearby_aircraft(self, i, ind1, ind2, ind, dist, adsbmax, ntraf):
-        """Get indices of aircraft within ADS-B range."""
+    def _filter_nearby_aircraft(self, i, ind, dist, adsbmax, ntraf):
+        """Get indices of aircraft within range."""
         i_other = np.delete(np.arange(0, ntraf), i)
         ac_adsb = np.where(dist[ind] < adsbmax)[0]
         ind = ind[ac_adsb]
@@ -604,9 +616,7 @@ class SSD_Drone(ConflictResolution):
 
     @prof.profile_function("SSD._finalize_ssd_regions") if _profiling_available else lambda f: f
     def _finalize_ssd_regions(self, ARV, FRV, circle_lst, vmin, vmax, ownship, i, xyc):
-        """ Compute a smaller subset of the ARV around the current speed if possible
-            TODO: Improve pruning of the ARV area as +- 0.1 m/s may be too strict for now just copy the full ARV
-                  for now, return full ARV"""
+        """ Compute a smaller subset of the ARV around the current speed if possible."""
         if len(ARV) == 0:
             return [], circle_lst, [], np.pi * (vmax ** 2 - vmin ** 2), 0
         elif len(FRV) == 0:
@@ -621,26 +631,27 @@ class SSD_Drone(ConflictResolution):
         FRV_area = self.area(FRV)
         ARV_area = self.area(ARV)
         
-        # Comment out and replace with ARV_calc = ARV if further perf improvements are needed
         # Compute smaller ARV ring around current speed
         pc2 = pyclipper.Pyclipper()
-        pc2.AddPaths(pyclipper.scale_from_clipper(
-            pyclipper.scale_to_clipper(ARV)), pyclipper.PT_CLIP, True)
-        
-        xyp = (tuple(map(tuple, np.flipud(xyc * min(vmax, ownship.tas[i] + 0.1)))),
-               tuple(map(tuple, xyc * max(vmin, ownship.tas[i] - 0.1))))
-        part = pyclipper.scale_to_clipper(xyp)
-        pc2.AddPaths(part, pyclipper.PT_SUBJECT, True)
-        
+
+        # Pruning ring around current speed (clamped to [vmin, vmax])
+        arv_speed_buffer = bs.settings.ARV_speed_buffer  # [m/s]
+        v_outer = min(vmax, ownship.tas[i] + arv_speed_buffer)
+        v_inner = max(vmin, ownship.tas[i] - arv_speed_buffer)
+        xyp = (tuple(map(tuple, np.flipud(xyc * v_outer))),
+               tuple(map(tuple, xyc * v_inner)))
+
+        # Intersect ARV with the pruning ring (ARV as subject, ring as clip)
+        pc2.AddPaths(pyclipper.scale_to_clipper(ARV), pyclipper.PT_SUBJECT, True)
+        pc2.AddPaths(pyclipper.scale_to_clipper(xyp), pyclipper.PT_CLIP, True)
+
         ARV_calc = pyclipper.scale_from_clipper(
             pc2.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
         
-        # Fallback to full ARV if no intersection
+        # Fallback to full ARV if no intersection close to current speed
         if len(ARV_calc) == 0:
-            ARV_calc = ARV # Use full ARV
-        else:
-            ARV_calc = ARV # Also use full ARV until logic is improved
-        
+            ARV_calc = ARV  # Use full ARV
+    
         return ARV, FRV, ARV_calc, FRV_area, ARV_area
 
     @prof.profile_function("SSD.constructSSD") if _profiling_available else lambda f: f
@@ -703,6 +714,8 @@ class SSD_Drone(ConflictResolution):
             if not self._should_process_aircraft(i, ownship, c2c_ownship_ids):
                 continue
             
+            logger.debug("Constructing SSD for %(ownship)s...", {'ownship': str(ownship.id[i])})
+
             # Only calculate SSD for aircraft in conflict
             if not conf.inconf[i]:
                 continue
@@ -712,7 +725,7 @@ class SSD_Drone(ConflictResolution):
             if vmin is None:
                 continue
             
-            # Create velocity circles for this aircraft
+            # Create velocity circles based on vmax and vmin for this aircraft
             circle_tup, circle_lst = self._create_velocity_circles(xyc, vmin, vmax)
             
             # Find indices of nearby aircraft
@@ -724,11 +737,11 @@ class SSD_Drone(ConflictResolution):
                                          ARV_calc_loc, FRV_area_loc, ARV_area_loc)
                 continue
             
-            # Filter for aircraft within ADS-B range
-            i_other, ind, fix = self._filter_nearby_aircraft(i, ind1, ind2, ind, dist, adsbmax, ntraf)
+            # Filter for aircraft within range
+            i_other, ind, fix = self._filter_nearby_aircraft(i, ind, dist, adsbmax, ntraf)
             conf.inrange[i] = i_other
             
-            # Construct velocity obstacle vertices
+            # Construct velocity obstacle vertices for intruders
             xy = self._construct_velocity_obstacle_vertices(i_other, gseast, gsnorth, ind, fix, vmax, vo_trig)
             
             # Initialize clipper for geometric operations
@@ -752,10 +765,12 @@ class SSD_Drone(ConflictResolution):
                                                      phis_gf, x_hats_prime, y_hats_prime, N_angle, vmax)
             
             # Execute clipper to compute FRV and ARV
-            FRV = pyclipper.scale_from_clipper(
-                pc.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO))
-            ARV = pc.Execute(pyclipper.CT_DIFFERENCE, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
-            ARV = pyclipper.scale_from_clipper(ARV)
+            FRV_raw = pc.Execute(pyclipper.CT_INTERSECTION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
+            ARV_raw = pc.Execute(pyclipper.CT_DIFFERENCE, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
+            
+            # Scale the results back to original coordinate system
+            FRV = pyclipper.scale_from_clipper(FRV_raw)
+            ARV = pyclipper.scale_from_clipper(ARV_raw)
             
             # Finalize regions and compute ARV subset
             ARV_loc[i], FRV_loc[i], ARV_calc_loc[i], FRV_area_loc[i], ARV_area_loc[i] = \
@@ -844,37 +859,36 @@ class SSD_Drone(ConflictResolution):
         return tres, qdr_res, dist_res, lat_res, lon_res, alt_res, dx_n_res, dy_n_res
 
     @prof.profile_function("SSD._check_geofence_status") if _profiling_available else lambda f: f
-    def _check_geofence_status(self, ownship, i, lat_res, lon_res):
+    def _check_geofence_status(self, ownship, i, lat_res=None, lon_res=None):
         """Check if geofence is defined and validate ownship/resolution positions.
         
         Args:
             ownship: Aircraft object
             i: Aircraft index
-            lat_res: Resolution latitude
-            lon_res: Resolution longitude
+            lat_res: Latitude of position to check [deg]
+            lon_res: Longitude of position to check [deg]
             
         Returns:
             Tuple of (geofence_defined, ownship_in_geofence, solution_in_geofence)
         """
         geofence_defined = False
         ownship_in_geofence = False
-        solution_in_geofence = True
+        solution_in_geofence = False
         
         try:
-            areafilter.basic_shapes['GF_' + str(ownship.id[i])]
+            geofence = areafilter.basic_shapes['GF_' + str(ownship.id[i])]
+            geofence_defined = True
+            
+            # Check if ownship is within geofence
+            ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), ownship.lat[i], ownship.lon[i], 0)
+            
+            # Check if resolution waypoint is within geofence
+            solution_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), lat_res, lon_res, 0) if lat_res is not None and lon_res is not None else False
+            
+            if not ownship_in_geofence:
+                logger.warning("Aircraft %(ac)s is outside geofence bounds", {'ac': ownship.id[i]})
         except:
             pass
-        else:
-            geofence_defined = True
-            ownship_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), 
-                                                         ownship.lat[i], ownship.lon[i], 0)
-            if not ownship_in_geofence:
-                logger.warning("%(ownship)s is not within the currently active geofence", 
-                             {'ownship': str(ownship.id[i])})
-            
-            if ownship_in_geofence:
-                solution_in_geofence = areafilter.checkInside('GF_' + str(ownship.id[i]), 
-                                                             lat_res, lon_res, 0)
         
         return geofence_defined, ownship_in_geofence, solution_in_geofence
 
@@ -954,7 +968,8 @@ class SSD_Drone(ConflictResolution):
         current_time = time.time()
         delta_cr_time = current_time - conflictresolutiontime.cr_time[i]
         
-        if delta_cr_time <= 4.0:
+        if delta_cr_time <= bs.settings.avoidance_timeout:
+            logger.debug("Waiting for previous avoidance request to timeout: %(delta_cr_time)f < %(timeout)f seconds", {'delta_cr_time': delta_cr_time, 'timeout': bs.settings.avoidance_timeout})
             return False
         
         conflictresolutiontime.cr_time[i] = current_time
@@ -972,6 +987,10 @@ class SSD_Drone(ConflictResolution):
             'vres': float(dist_res * nm / tres) if not np.isclose(tres, 0.0) else 0.0
         }
         
+        if avoid_request_publisher is None:
+            logger.debug("C2C MQTT disabled; skipping avoid_request publish")
+            return False
+
         logger.debug("Sending avoid_request: %(body)s", {'body': json.dumps(body)})
         msg_info = avoid_request_publisher.mqtt_client.publish('daa/avoid_request', 
                                                                payload=json.dumps(body))
@@ -1002,12 +1021,11 @@ class SSD_Drone(ConflictResolution):
         # Loop through SSDs of all aircraft
         for i in range(ntraf):
             
-            # Only do avoidances with drones registered as ownships in the C2C
-            if bs.settings.avoid_ownship_only:
-                if bs.traf.id[i] not in c2c_ownship_ids:
-                    continue
-
-            logger.debug("Checking %(ownship)s for conflicts as it is registered in the C2C", {'ownship': str(bs.traf.id[i])})
+            # Only do avoidances with aircraft that should be processed
+            if not self._should_process_aircraft(i, ownship, c2c_ownship_ids):
+                continue
+            
+            logger.debug("Checking %(ownship)s for conflicts...", {'ownship': str(ownship.id[i])})
             
             # Only those that are in conflict need to resolve
             if conf.inconf[i] and ARV[i] is not None and len(ARV[i]) > 0:
@@ -1025,10 +1043,9 @@ class SSD_Drone(ConflictResolution):
         # Loop through resolutions
         for i in range(ntraf):
 
-            # Only do avoidances with the ownship if turned on
-            if bs.settings.avoid_ownship_only:
-                if bs.traf.id[i] not in c2c_ownship_ids:
-                    continue
+            # Only do avoidances with aircraft that should be processed
+            if not self._should_process_aircraft(i, ownship, c2c_ownship_ids):
+                continue
                 
             if (conf.asase[i] != 0. and conf.asasn[i] != 0.):
                 # Calculate resolution waypoint
@@ -1044,12 +1061,12 @@ class SSD_Drone(ConflictResolution):
                 if geofence_defined and ownship_in_geofence and not solution_in_geofence:
                     lat_res, lon_res = self._adjust_resolution_for_geofence(
                         ownship, i, qdr_res, dx_n_res, dy_n_res)
+                    dist_res = np.sqrt(dx_n_res**2 + dy_n_res**2) / nm
                     solution_in_geofence = True
 
                 # Publish MQTT avoid request if timeout elapsed and solution is valid
-                if solution_in_geofence:
-                    self._publish_avoid_request(ownship, i, lat_res, lon_res, alt_res, 
-                                                tres, dist_res)
+                self._publish_avoid_request(ownship, i, lat_res, lon_res, alt_res, 
+                                            tres, dist_res)
 
             # reset resolution as external parties have to respond to it
             conf.asase[i] = gseast[i]
