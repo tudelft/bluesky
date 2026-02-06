@@ -474,7 +474,7 @@ def create_scenario_11_parallel_offset():
             }
         ],
         "geofence": {
-            "ac_id": "OWN012",
+            "ac_id": "OWN011",
             "vertices": [
                 (51.995, 3.995),
                 (51.995, 4.005),
