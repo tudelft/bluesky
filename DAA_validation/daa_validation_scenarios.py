@@ -328,18 +328,18 @@ def create_scenario_8_near_geofence_edge():
         "description": "Conflict near geofence boundary, 140m separation",
         "aircraft": [
             {
-                "id": "OWN009",
-                "lat": 52.0045,     # Near north edge of geofence
-                "lon": 4.0,
+                "id": "OWN008",
+                "lat": 52.0045,     # Near west edge of geofence
+                "lon": 3.995,
                 "alt": 1000.0,
                 "trk": 90.0,        # East
                 "gs": 12.0,
                 "vs": 0.0,
             },
             {
-                "id": "INT009",
+                "id": "INT008",
                 "lat": 52.0045,
-                "lon": 4.00139,     # ~140m east (head-on)
+                "lon": 4.005,     # Near east edge of geofence
                 "alt": 1000.0,
                 "trk": 270.0,       # West (head-on)
                 "gs": 12.0,
@@ -347,7 +347,7 @@ def create_scenario_8_near_geofence_edge():
             }
         ],
         "geofence": {
-            "ac_id": "OWN009",
+            "ac_id": "OWN008",
             "vertices": [
                 (51.995, 3.995),
                 (51.995, 4.005),
