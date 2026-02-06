@@ -320,6 +320,21 @@ class ScenarioPublisher:
             # First aircraft is the ownship
             if idx == 0:
                 self.ownship_id = ac['id']
+
+        # Publish scenario start message for external plotters
+        try:
+            scenario_start = {
+                "event": "start",
+                "scenario": scenario.get("name", "Unnamed Scenario"),
+                "aircraft_ids": [ac['id'] for ac in scenario['aircraft']],
+                "ownship_id": self.ownship_id,
+                "intruder_ids": [ac['id'] for ac in scenario['aircraft'] if ac['id'] != self.ownship_id],
+                "timestamp": time.time(),
+            }
+            self.client.publish("daa/scenario", json.dumps(scenario_start), qos=0)
+            print("✓ Published scenario start to daa/scenario")
+        except Exception as exc:
+            print(f"  Scenario start publish failed: {exc}")
         
         # Publish geofence once at the start
         if daa_msgs['geofence']:
