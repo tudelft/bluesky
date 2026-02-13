@@ -173,13 +173,12 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
     def on_log(self, mqttc, obj, level, string):
         return
     
-    def publish_conflict_detection(self, ac_id, traffic_ids, time_to_conflict):
+    def publish_conflict_detection(self, ac_id, conflicts):
         """Publish early conflict detection warning."""
         body = {
             'ac_id': ac_id,
             'timestamp': int(time.time()),
-            'traffic_ids': traffic_ids,
-            'time_to_conflict': time_to_conflict
+            'conflicts': conflicts
         }
         
         logger.debug("Sending conflict_detection: %(body)s", {'body': json.dumps(body)})
@@ -256,24 +255,24 @@ class SSD_Drone(ConflictResolution):
             time_since_last_publish = current_time - conflictearlywarning.last_publish_time[i]
             
             if time_since_last_publish >= publish_interval:
-                # Collect all current conflicts for this aircraft
-                traffic_in_conflict = [pair[1] for pair in confpairs_early 
-                                      if pair[0] == ownship.id[i]]
-                
-                # Get time to conflict for all conflicts
-                ttc_list = [float(tcpa_early[j]) for j, pair in enumerate(confpairs_early)
-                           if pair[0] == ownship.id[i]]
+                # Collect all current conflicts for this aircraft with paired traffic_id and time_to_conflict
+                conflicts = []
+                for j, pair in enumerate(confpairs_early):
+                    if pair[0] == ownship.id[i]:
+                        conflicts.append({
+                            'traffic_id': pair[1],
+                            'time_to_conflict': float(tcpa_early[j])
+                        })
                 
                 # Publish full conflict state
                 if avoid_request_publisher and avoid_request_publisher.mqtt_client:
                     avoid_request_publisher.mqtt_client.publish_conflict_detection(
                         ownship.id[i],
-                        traffic_in_conflict,
-                        ttc_list
+                        conflicts
                     )
                     
                     logger.debug("Published conflict detection for %(ac_id)s: %(n_conflicts)d conflicts",
-                               {'ac_id': ownship.id[i], 'n_conflicts': len(traffic_in_conflict)})
+                               {'ac_id': ownship.id[i], 'n_conflicts': len(conflicts)})
                 
                 # Update last publish time
                 conflictearlywarning.last_publish_time[i] = current_time
