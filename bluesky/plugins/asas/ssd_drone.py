@@ -255,12 +255,12 @@ class SSD_Drone(ConflictResolution):
             time_since_last_publish = current_time - conflictearlywarning.last_publish_time[i]
             
             if time_since_last_publish >= publish_interval:
-                # Collect all current conflicts for this aircraft with paired traffic_id and time_to_conflict
+                # Collect all current conflicts for this aircraft with paired intruder_id and time_to_conflict
                 conflicts = []
                 for j, pair in enumerate(confpairs_early):
                     if pair[0] == ownship.id[i]:
                         conflicts.append({
-                            'traffic_id': pair[1],
+                            'intruder_id': pair[1],
                             'time_to_conflict': float(tcpa_early[j])
                         })
                 

@@ -202,15 +202,15 @@ components:
           items:
             type: object
             properties:
-              traffic_id:
+              intruder_id:
                 type: string
-                description: "ID of the traffic object in conflict with the ownship"
+                description: "ID of the intruder object in conflict with the ownship"
               time_to_conflict:
                 type: number
                 format: float
                 description: "Time to conflict in seconds. This is the time until the ownship and the traffic object are predicted to violate the separation minima if no change in state is performed."
             required:
-              - traffic_id
+              - intruder_id
               - time_to_conflict
       required: 
         - ac_id 
