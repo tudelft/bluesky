@@ -185,6 +185,34 @@ components:
         - inconf
         - inreso
 
+    ConflictDetection:
+      type: object
+      description: "Early warning for conflict detection."
+      properties:
+        timestamp: 
+          type: integer 
+          format: uint32 
+          description: "Unix time since epoch at the moment the conflict is detected"  
+        ac_id: 
+        type: string 
+        description: "Unique identification of vehicle that needs to stay constant for each vehicle for each operation" 
+        traffic_ids: 
+          type: array 
+          items: 
+            type: string
+          description: "IDs of traffic objects that are in conflict with the ownship at the moment of detection. This can be an array of IDs if multiple traffic objects are in conflict at the same time." 
+        time_to_conflict: 
+          type: array 
+          items: 
+            type: number 
+          format: float 
+          description: "Time to conflict in seconds at the moment of detection. This is the time until the ownship and the traffic object(s) are predicted to violate the separation minima if no change in state is performed."
+      required: 
+        - ac_id 
+        - timestamp
+        - traffic_ids 
+        - time_to_conflict
+
     AvoidRequest:
       type: object
       description: "Message requesting a conflict resolution to the operator by directly adding a waypoint in the flightplan"

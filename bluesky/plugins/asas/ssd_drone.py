@@ -112,6 +112,20 @@ class ConflictResolutionTime(core.Entity):
 
 conflictresolutiontime = ConflictResolutionTime()
 
+class ConflictEarlyWarning(core.Entity):
+    ''' Entity tracking conflict detection publish timing. '''
+    def __init__(self):
+        super().__init__()
+        with self.settrafarrays():
+            self.last_publish_time = np.array([])  # Time of last conflict detection publish
+
+    def create(self, n=1):
+        ''' This function gets called automatically when new aircraft are created. '''
+        super().create(n)
+        self.last_publish_time[-n:] = 0.0
+
+conflictearlywarning = ConflictEarlyWarning()
+
 class MQTTAvoidRequestPublisher(mqtt.Client):
     def __init__(self, C2CAvoidRequestPublisher):
         super().__init__()
@@ -159,6 +173,18 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
     def on_log(self, mqttc, obj, level, string):
         return
     
+    def publish_conflict_detection(self, ac_id, traffic_ids, time_to_conflict):
+        """Publish early conflict detection warning."""
+        body = {
+            'ac_id': ac_id,
+            'timestamp': int(time.time()),
+            'traffic_ids': traffic_ids,
+            'time_to_conflict': time_to_conflict
+        }
+        
+        logger.debug("Sending conflict_detection: %(body)s", {'body': json.dumps(body)})
+        self.publish('daa/conflict_detection', payload=json.dumps(body))
+    
     def stop(self):
         self.loop_stop()
 
@@ -192,6 +218,65 @@ class SSD_Drone(ConflictResolution):
 
         # Construct the SSD
         constructSSD(asas, traf)
+
+    def update(self, conf, ownship, intruder):
+        """Update conflict resolution and run early conflict detection independently."""
+        # Run early conflict detection FIRST, before standard resolution
+        self.detect_early_conflicts(conf, ownship)
+        
+        # Then run the standard resolution update
+        super().update(conf, ownship, intruder)
+
+    def detect_early_conflicts(self, conf, ownship):
+        """Detect conflicts using longer lookahead time and publish at regular intervals."""
+        # Use the longer conflict detection lookahead time
+        cd_dtlookahead = np.full(ownship.ntraf, bs.settings.conflict_detection_dtlookahead)
+        
+        # Run conflict detection with early warning lookahead
+        confpairs_early, lospairs_early, inconf_early, tcpamax_early, qdr_early, \
+            dist_early, dcpa_early, tcpa_early, tLOS_early = \
+                bs.traf.cd.detect(ownship, ownship, conf.rpz, conf.hpz, cd_dtlookahead)
+        
+        # Filter aircraft that should be processed
+        c2c_ownship_ids = (set(ownstate_receiver.c2c_ownstate_receiver.ownstate_objects.keys()) 
+                          if bs.settings.avoid_ownship_only else None)
+        
+        current_time = time.time()
+        publish_interval = bs.settings.conflict_detection_publish_interval
+
+        # Publish full conflict state at regular intervals (only when in conflict)
+        for i in range(ownship.ntraf):
+            if not self._should_process_aircraft(i, ownship, c2c_ownship_ids):
+                continue
+            
+            # Only publish if ownship is in conflict
+            if not inconf_early[i]:
+                continue
+
+            time_since_last_publish = current_time - conflictearlywarning.last_publish_time[i]
+            
+            if time_since_last_publish >= publish_interval:
+                # Collect all current conflicts for this aircraft
+                traffic_in_conflict = [pair[1] for pair in confpairs_early 
+                                      if pair[0] == ownship.id[i]]
+                
+                # Get time to conflict for all conflicts
+                ttc_list = [float(tcpa_early[j]) for j, pair in enumerate(confpairs_early)
+                           if pair[0] == ownship.id[i]]
+                
+                # Publish full conflict state
+                if avoid_request_publisher and avoid_request_publisher.mqtt_client:
+                    avoid_request_publisher.mqtt_client.publish_conflict_detection(
+                        ownship.id[i],
+                        traffic_in_conflict,
+                        ttc_list
+                    )
+                    
+                    logger.debug("Published conflict detection for %(ac_id)s: %(n_conflicts)d conflicts",
+                               {'ac_id': ownship.id[i], 'n_conflicts': len(traffic_in_conflict)})
+                
+                # Update last publish time
+                conflictearlywarning.last_publish_time[i] = current_time
 
 
     def resolve(self, conf, ownship, intruder):
@@ -968,8 +1053,8 @@ class SSD_Drone(ConflictResolution):
         current_time = time.time()
         delta_cr_time = current_time - conflictresolutiontime.cr_time[i]
         
-        if delta_cr_time <= bs.settings.avoidance_timeout:
-            logger.debug("Waiting for previous avoidance request to timeout: %(delta_cr_time)f < %(timeout)f seconds", {'delta_cr_time': delta_cr_time, 'timeout': bs.settings.avoidance_timeout})
+        if delta_cr_time <= bs.settings.avoidance_request_publish_interval:
+            logger.debug("Waiting for previous avoidance request to timeout: %(delta_cr_time)f < %(timeout)f seconds", {'delta_cr_time': delta_cr_time, 'timeout': bs.settings.avoidance_request_publish_interval})
             return False
         
         conflictresolutiontime.cr_time[i] = current_time

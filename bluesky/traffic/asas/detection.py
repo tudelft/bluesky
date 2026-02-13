@@ -8,7 +8,9 @@ from bluesky.stack import command
 
 
 bs.settings.set_variable_defaults(asas_pzr=5.0, asas_pzh=1000.0,
-                                  asas_dtlookahead=300.0)
+                                  asas_dtlookahead=300.0,
+                                  conflict_detection_dtlookahead=300.0,
+                                  conflict_detection_publish_interval=2.0)
 
 
 class ConflictDetection(Entity, replaceable=True):
