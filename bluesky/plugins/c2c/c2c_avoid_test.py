@@ -15,6 +15,8 @@ import time
 import os
 
 class MQTTAvoidRequestPublisher(mqtt.Client):
+    def __init__(self):
+        super().__init__(client_id="BLUESKY_Avoid_Test")
 
     def on_connect(self, mqttc, obj, flags, rc):
         return
@@ -94,6 +96,10 @@ def generate_testresolution(acid: str):
     body['alt'] = int(alt_res * 10**3)
 
     mqtt_publisher = MQTTAvoidRequestPublisher()
+    mqtt_user = os.environ.get("MQTT_USER")
+    mqtt_pass = os.environ.get("MQTT_PASS")
+    if mqtt_user and mqtt_pass:
+        mqtt_publisher.username_pw_set(mqtt_user, mqtt_pass)
     mqtt_publisher.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
     mqtt_publisher.loop_start()
     mqtt_publisher.publish('daa/avoid_request', payload=json.dumps(body))

@@ -140,10 +140,14 @@ class C2CGeofence(object):
 
 class MQTTC2CGeofenceReceiverClient(mqtt.Client):
     def __init__(self, c2c_geofence_object):
-        super().__init__()
+        super().__init__(client_id="BLUESKY_Geofence_Receiver")
         self.c2c_geofence_object = c2c_geofence_object
 
     def run(self):
+        mqtt_user = os.environ.get("MQTT_USER")
+        mqtt_pass = os.environ.get("MQTT_PASS")
+        if mqtt_user and mqtt_pass:
+            self.username_pw_set(mqtt_user, mqtt_pass)
         self.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
         rc = self.loop_start()
 

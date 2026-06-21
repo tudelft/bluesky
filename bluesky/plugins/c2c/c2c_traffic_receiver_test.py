@@ -58,9 +58,13 @@ class C2CTrafficReceiverTest(Entity):
 
 class MQTTC2CTrafficClient(mqtt.Client):
     def __init__(self):
-        super().__init__()
+        super().__init__(client_id="BLUESKY_Traffic_Receiver_Test")
 
     def run(self):
+        mqtt_user = os.environ.get("MQTT_USER")
+        mqtt_pass = os.environ.get("MQTT_PASS")
+        if mqtt_user and mqtt_pass:
+            self.username_pw_set(mqtt_user, mqtt_pass)
         self.connect(os.environ["MQTT_HOST"], int(os.environ["MQTT_PORT"]), 60)
         rc = self.loop_start()
         return rc

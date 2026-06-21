@@ -41,7 +41,7 @@ HEARTBEAT_INTERVAL = float(os.getenv("DAA_HEALTH_INTERVAL_SEC", "2"))
 
 class MQTTHealthClient(mqtt.Client):
     def __init__(self, monitor: 'HealthMonitor'):
-        super().__init__()
+        super().__init__(client_id="BLUESKY_Health_Monitor")
         self.monitor = monitor
 
     def on_connect(self, client, userdata, flags, rc):
@@ -72,6 +72,11 @@ class HealthMonitor:
         will_topic = "bluesky/status"
         will_payload = {"status": "offline", "ts": int(time.time()), "sim_time": 0.0, "sim_dt": 0.0, "sim_state": 0, "ntraf": 0, "pid": os.getpid()}
         self.mqtt_client.will_set(will_topic, payload=json.dumps(will_payload), qos=1, retain=True)
+
+        mqtt_user = os.environ.get("MQTT_USER")
+        mqtt_pass = os.environ.get("MQTT_PASS")
+        if mqtt_user and mqtt_pass:
+            self.mqtt_client.username_pw_set(mqtt_user, mqtt_pass)
 
         try:
             self.mqtt_client.connect(host, port, 60)

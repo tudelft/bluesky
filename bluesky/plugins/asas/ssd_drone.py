@@ -128,7 +128,7 @@ conflictearlywarning = ConflictEarlyWarning()
 
 class MQTTAvoidRequestPublisher(mqtt.Client):
     def __init__(self, C2CAvoidRequestPublisher):
-        super().__init__()
+        super().__init__(client_id="BLUESKY_Avoid_Request_Publisher")
         self.C2CAvoidRequestPublisher = C2CAvoidRequestPublisher
         self._publish_cache = {}  # Cache to track what was published
 
@@ -139,6 +139,10 @@ class MQTTAvoidRequestPublisher(mqtt.Client):
         if not mqtt_host or not mqtt_port:
             logger.warning("MQTT_HOST/MQTT_PORT not set; avoid_request publisher not started")
             return
+        mqtt_user = os.environ.get("MQTT_USER")
+        mqtt_pass = os.environ.get("MQTT_PASS")
+        if mqtt_user and mqtt_pass:
+            self.username_pw_set(mqtt_user, mqtt_pass)
         self.connect(mqtt_host, int(mqtt_port), 60)
         self.loop_start()
 
